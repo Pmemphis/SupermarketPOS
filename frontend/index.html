@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NextGen UltraPOS - Professional Kenya Edition</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="login-screen">
+        <div class="login-card">
+            <h2 class="primary-text">NEXTGEN SYSTEMS LTD</h2>
+            <p>Authorized Personnel Only</p>
+            <input type="text" id="username" placeholder="Cashier Username" autofocus>
+            <input type="password" id="password" placeholder="Terminal Password">
+            <button class="btn-login" onclick="handleLogin()">UNLOCK TERMINAL</button>
+        </div>
+    </div>
+
+    <div id="pos-interface" style="display:none;">
+        <header>
+            <div class="brand">ULTRA-POS <small>v1.0</small></div>
+            <input type="text" id="barcode-input" placeholder="Ready to Scan Product Barcode...">
+            <div class="user-info">
+                Cashier: <b id="cashier-display">...</b> | 
+                <button onclick="logout()" class="logout-link">Logout</button>
+            </div>
+        </header>
+
+        <main class="pos-main">
+            <section class="cart-section">
+                <table id="cart-table">
+                    <thead>
+                        <tr>
+                            <th>Description</th>
+                            <th>Qty</th>
+                            <th>Unit Price</th>
+                            <th>Total (Ksh)</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cart-items">
+                        </tbody>
+                </table>
+            </section>
+
+            <aside class="sidebar">
+                <div class="total-box">
+                    <p>VAT (16% Included)</p>
+                    <small>Subtotal: <span id="subtotal">Ksh 0.00</span></small>
+                    <p>Tax Amount: <span id="tax">Ksh 0.00</span></p>
+                    <hr class="faded-hr">
+                    <h1 id="grand-total">Ksh 0.00</h1>
+                </div>
+
+                <div class="action-buttons">
+                    <button class="btn-checkout" onclick="processCheckout()">CHECKOUT (F12)</button>
+                    <button class="btn-report" onclick="showDailyReport()">DAILY Z-REPORT (F9)</button>
+                    <button class="btn-report manager-btn" onclick="openAdminDashboard()">MANAGER ANALYTICS (F2)</button>
+                    <button class="btn-report" onclick="openSearchModal()">MANUAL SEARCH (F1)</button>
+                    <button class="btn-report void-btn" onclick="voidCart()">VOID ALL</button>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <div id="payment-modal" class="modal">
+        <div class="modal-content" style="max-width: 400px; text-align: center;">
+            <h3 style="margin-bottom: 5px;">Select Payment Method</h3>
+            <h1 id="modal-total-display" style="color: var(--primary); margin-top: 0;">Ksh 0.00</h1>
+            
+            <div class="payment-grid" style="display: grid; gap: 12px; margin-top: 20px;">
+                <button class="btn-checkout" onclick="confirmPayment('CASH')" style="background: #27ae60;">CASH (1)</button>
+                <button class="btn-checkout" onclick="confirmPayment('MPESA')" style="background: #1e8449;">M-PESA (2)</button>
+                <button class="btn-checkout" onclick="confirmPayment('CARD')" style="background: #2c3e50;">BANK CARD (3)</button>
+            </div>
+            
+            <div id="payment-status-container" style="margin-top: 15px;"></div>
+
+            <button class="btn-void-small" onclick="closeModal('payment-modal')" style="margin-top: 25px; width: 100%;">Cancel Transaction</button>
+        </div>
+    </div>
+
+    <div id="admin-dashboard" class="dashboard-overlay">
+        <div class="wider-dashboard">
+            <div class="dashboard-sidebar">
+                <h3 style="color: white; padding: 0 25px; margin-bottom: 30px; letter-spacing: 1px;">ADMIN PANEL</h3>
+                <div class="dash-nav-item" id="nav-perf" onclick="switchDashTab('performance')">Performance</div>
+                <div class="dash-nav-item" id="nav-inv" onclick="switchDashTab('inventory')">Inventory Log</div>
+                <div class="dash-nav-item" id="nav-staff" onclick="switchDashTab('staff')">Staff Audit</div>
+                
+                <button class="close-dash-btn" onclick="closeModal('admin-dashboard')">EXIT ADMIN</button>
+            </div>
+            
+            <div class="dashboard-main-content">
+                <div id="performance-tab" class="dash-tab-content">
+                    <h2 style="margin-top:0;">Business Intelligence Overview</h2>
+                    <div class="stats-grid" id="dash-content">
+                        </div>
+                    
+                    <div class="secondary-metrics">
+                        <div class="metric-box">
+                            <h4>Top Selling Product</h4>
+                            <p id="top-product" style="font-size: 1.2rem; font-weight: bold; color: var(--primary);">Analyzing...</p>
+                        </div>
+                        <div class="metric-box">
+                            <h4>Avg. Sale Value</h4>
+                            <p id="avg-sale" style="font-size: 1.2rem; font-weight: bold; color: var(--accent);">Ksh 0.00</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="inventory-tab" class="dash-tab-content" style="display:none;">
+                    <h2 style="margin-top:0;">Inventory & Low Stock Tracking</h2>
+                    <div class="table-scroll">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Product Name</th>
+                                    <th>Barcode</th>
+                                    <th>Stock Level</th>
+                                    <th>Status</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="inventory-log-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="staff-tab" class="dash-tab-content" style="display:none;">
+                    <h2 style="margin-top:0;">Cashier Performance Leaderboard</h2>
+                    <div id="staff-audit-list">
+                        <p>Loading performance metrics...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="search-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal('search-modal')">&times;</span>
+            <h3>Product Inventory Search</h3>
+            <input type="text" id="manual-query" placeholder="Type name or category..." onkeyup="manualSearch()">
+            <div id="search-results-list" class="search-results-container"></div>
+        </div>
+    </div>
+
+    <div id="report-modal" class="modal">
+        <div class="modal-content printable-area">
+            <span class="close no-print" onclick="closeModal('report-modal')">&times;</span>
+            <div class="report-header">
+                <h2>NEXTGEN SYSTEMS Z-REPORT</h2>
+                <p id="report-date-title"></p>
+            </div>
+            <hr>
+            <div id="report-data" class="report-body">
+                </div>
+            <button class="btn-login print-btn no-print" onclick="window.print()" style="margin-top: 20px;">PRINT REPORT</button>
+        </div>
+    </div>
+
+    <div id="receipt-template" class="receipt-print-only"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>
