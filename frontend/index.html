@@ -41,15 +41,29 @@
                         </tr>
                     </thead>
                     <tbody id="cart-items">
-                        </tbody>
+                    </tbody>
                 </table>
             </section>
 
             <aside class="sidebar">
+                <div class="total-box" style="background: #1e272e; border-bottom: 3px solid #f5dd5d; margin-bottom: 12px; padding: 12px;">
+                    <small style="color: #f5dd5d; text-transform: uppercase; letter-spacing: 0.5px; font-weight: bold; display: block; margin-bottom: 6px;">🏅 Supermarket Loyalty Profile</small>
+                    <div style="display: flex; gap: 6px;">
+                        <input type="text" id="loyalty-search-input" placeholder="Enter Phone (e.g. 07...)" style="flex: 1; padding: 6px; background: #2f3640; border: 1px solid #487eb0; color: white; border-radius: 4px; font-size: 13px;">
+                        <button onclick="lookupLoyaltyCustomer()" style="background: #487eb0; color: white; border: none; padding: 0 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold;">LINK</button>
+                    </div>
+                    <div id="loyalty-status-display" style="margin-top: 8px; font-size: 12px; color: #dcdde1; line-height: 1.4; display: none;">
+                        Account: <b id="loyalty-name-node" style="color: #fff;">-</b><br>
+                        Spendable Balance: <b id="loyalty-points-node" style="color: #f5dd5d;">0 pts</b>
+                    </div>
+                </div>
+
                 <div class="total-box">
                     <p>VAT (16% Included)</p>
-                    <small>Subtotal: <span id="subtotal">Ksh 0.00</span></small>
-                    <p>Tax Amount: <span id="tax">Ksh 0.00</span></p>
+                    <small>Gross Subtotal: <span id="subtotal">Ksh 0.00</span></small>
+                    <p style="color: #2ecc71; font-weight: bold; margin: 8px 0 4px 0;">
+                        Total Savings: <span id="cart-discount">Ksh 0.00</span>
+                    </p>
                     <hr class="faded-hr">
                     <h1 id="grand-total">Ksh 0.00</h1>
                 </div>
@@ -74,6 +88,7 @@
                 <button class="btn-checkout" onclick="confirmPayment('CASH')" style="background: #27ae60;">CASH (1)</button>
                 <button class="btn-checkout" onclick="confirmPayment('MPESA')" style="background: #1e8449;">M-PESA (2)</button>
                 <button class="btn-checkout" onclick="confirmPayment('CARD')" style="background: #2c3e50;">BANK CARD (3)</button>
+                <button id="loyalty-pay-btn" class="btn-checkout" onclick="confirmPayment('LOYALTY')" style="background: #d35400; display: none;">🔥 REDEEM REWARD POINTS (4)</button>
             </div>
             
             <div id="payment-status-container" style="margin-top: 15px;"></div>
@@ -97,7 +112,7 @@
                 <div id="performance-tab" class="dash-tab-content">
                     <h2 style="margin-top:0;">Business Intelligence Overview</h2>
                     <div class="stats-grid" id="dash-content">
-                        </div>
+                    </div>
                     
                     <div class="secondary-metrics">
                         <div class="metric-box">
@@ -157,7 +172,7 @@
             </div>
             <hr>
             <div id="report-data" class="report-body">
-                </div>
+            </div>
             <button class="btn-login print-btn no-print" onclick="window.print()" style="margin-top: 20px;">PRINT REPORT</button>
         </div>
     </div>

@@ -96,3 +96,22 @@ USE_TZ = True
 # Static files (CSS, JavaScript)
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [os.path.join(BASE_DIR, 'frontend')]
+
+# Allow your Live Server frontend to bypass CORS security blocks
+CORS_ALLOWED_ORIGINS = [
+    "http://127.0.0.1:5500",
+    "http://localhost:5500",
+]
+
+# Ensure the browser allows authorization headers (Token Auth) to pass through
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]

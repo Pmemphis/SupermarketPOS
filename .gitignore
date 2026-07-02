@@ -1,0 +1,16 @@
+# Django Local Database & Cache
+db.sqlite3
+*.pyc
+__pycache__/
+staticfiles/
+media/
+
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# IDE and OS configurations
+.DS_Store
+.vscode/
+.idea/

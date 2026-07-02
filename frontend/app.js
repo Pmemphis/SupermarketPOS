@@ -1,20 +1,24 @@
 /**
  * NEXTGEN SYSTEMS LIMITED - ULTRAPOS v1.0
  * -------------------------------------------
- * High-Speed Multi-Channel Payment & Stock Management
- * FULL PRODUCTION VERSION
+ * High-Speed Multi-Channel Supermarket Payment & Stock Management
+ * ABSOLUTE FINAL INTEGRATED PRODUCTION VERSION
  */
 
 let cart = [];
+let ACTIVE_CUSTOMER_PHONE = ""; // Tracks linked loyalty customer account phone profile state
 let AUTH_TOKEN = localStorage.getItem('pos_token') || null;
 const API_BASE_URL = 'http://127.0.0.1:8000/api';
-const TAX_RATE = 0.16; // 16% VAT
+const TAX_RATE = 0.16; // 16% VAT Included in calculations
+
+// --- 0. UNIQUE SUPERMARKET LOCAL PROMOTION CONSTANTS ---
+const ACTIVE_PROMOTIONS = {
+    "6194000001234": { type: "QTY_DISCOUNT", reqQty: 2, promoPrice: 150.00 },
+    "6194000005678": { type: "BOGO", reqQty: 2 }
+};
 
 // --- 1. UTILITY: KENYA SHILLING & PHONE FORMATTING ---
 
-/**
- * Formats numbers into Kenya Shilling currency string
- */
 const formatKsh = (amount) => {
     return 'Ksh ' + parseFloat(amount || 0).toLocaleString('en-KE', {
         minimumFractionDigits: 2,
@@ -22,9 +26,6 @@ const formatKsh = (amount) => {
     });
 };
 
-/**
- * Ensures phone numbers are in Safaricom format: 2547XXXXXXXX
- */
 const formatPhoneNumber = (phone) => {
     let cleaned = phone.replace(/\D/g, ''); 
     if (cleaned.startsWith('0')) cleaned = '254' + cleaned.slice(1);
@@ -32,10 +33,10 @@ const formatPhoneNumber = (phone) => {
     return cleaned;
 };
 
-// --- 2. AUTHENTICATION ENGINE ---
+// --- 2. AUTHENTICATION & SHIFT LIFE-CYCLE ENGINE ---
 
 async function handleLogin() {
-    const user = document.getElementById('username').value;
+    const user = document.getElementById('username').value.trim();
     const pass = document.getElementById('password').value;
 
     if (!user || !pass) return alert("Please enter credentials");
@@ -49,10 +50,13 @@ async function handleLogin() {
 
         if (response.ok) {
             const data = await response.json();
+            
             AUTH_TOKEN = data.token;
-            localStorage.setItem('pos_token', AUTH_TOKEN);
+            localStorage.setItem('pos_token', data.token); 
             localStorage.setItem('cashier_name', user);
-            location.reload(); 
+            
+            // Advance directly to shift float allocation constraints
+            await initializeShiftFloat(user);
         } else {
             alert("Login Failed: Unauthorized Access.");
         }
@@ -61,19 +65,102 @@ async function handleLogin() {
     }
 }
 
+async function initializeShiftFloat(cashierName) {
+    const rawFloat = prompt("💰 SHIFT FLOAT INITIALIZATION:\nEnter starting Cash Drawer Float balance (Ksh):", "2000");
+    if (rawFloat === null) {
+        localStorage.clear();
+        return;
+    }
+    
+    const openingAmt = parseFloat(rawFloat) || 0.00;
+    
+    try {
+        const res = await fetch(`${API_BASE_URL}/shifts/open/`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Token ${AUTH_TOKEN}`
+            },
+            body: JSON.stringify({ opening_float: openingAmt })
+        });
+        
+        if (res.ok) {
+            // Unveil main dashboard natively bypassing reload token breaking drops
+            showInterface(cashierName);
+        } else {
+            alert("Backend rejected shift allocation setup.");
+        }
+    } catch (e) {
+        alert("Failed to sync shift management table server states.");
+    }
+}
+
+async function performEndShiftAuditDrop() {
+    if (!confirm("🏁 Are you sure you want to close your shift drawer and print the reconciliation drop report?")) return;
+    
+    const countCash = parseFloat(prompt("💵 Input total PHYSICAL CASH counted in drawer (Ksh):", "0")) || 0.00;
+    const countMpesa = parseFloat(prompt("📱 Input total M-PESA statement balance counted (Ksh):", "0")) || 0.00;
+    const countCard = parseFloat(prompt("💳 Input total CARD merchant slips volume counted (Ksh):", "0")) || 0.00;
+    
+    try {
+        const res = await fetch(`${API_BASE_URL}/shifts/close/`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Token ${AUTH_TOKEN}`
+            },
+            body: JSON.stringify({ counted_cash: countCash, counted_mpesa: countMpesa, counted_card: countCard })
+        });
+        
+        if (res.ok) {
+            const audit = await res.json();
+            console.log("Shift Audit Raw Response Payload:", audit);
+            
+            // Safe variance access using fallbacks to prevent UI runtime property access crashes
+            const vCash = audit.variance && audit.variance.cash !== undefined ? audit.variance.cash : 0;
+            const vMpesa = audit.variance && audit.variance.mpesa !== undefined ? audit.variance.mpesa : 0;
+            const vCard = audit.variance && audit.variance.card !== undefined ? audit.variance.card : 0;
+            
+            alert(`🏁 SHIFT AUDIT DROPPED FOR [${(audit.cashier || 'CASHIER').toUpperCase()}]\n` +
+                  `---------------------------------------------\n` +
+                  `• CASH VARIANCE:  Ksh ${parseFloat(vCash).toFixed(2)}\n` +
+                  `• MPESA VARIANCE: Ksh ${parseFloat(vMpesa).toFixed(2)}\n` +
+                  `• CARD VARIANCE:  Ksh ${parseFloat(vCard).toFixed(2)}\n\n` +
+                  `⚠️ Verification Completed. Shift session locked successfully.`);
+                  
+            logout();
+        } else {
+            const errData = await res.json();
+            alert("Error closing current shift session: " + JSON.stringify(errData));
+        }
+    } catch(e) {
+        console.error("Runtime exception intercepted: ", e);
+        alert(`Runtime Notice: Processing complete, but UI formatting encountered a local exception: ${e.message}. Logging out...`);
+        logout();
+    }
+}
+
 function showInterface(cashierName) {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('pos-interface').style.display = 'block';
     document.getElementById('cashier-display').innerText = cashierName;
+    
+    // Append explicit "End Shift" close element programmatically to header tracking navigation row
+    const logoutBtn = document.querySelector('.logout-link');
+    if (logoutBtn && !document.getElementById('shift-drop-btn')) {
+        const dropBtn = document.createElement('button');
+        dropBtn.id = "shift-drop-btn";
+        dropBtn.innerText = "🏁 End Shift Drop";
+        dropBtn.className = "logout-link";
+        dropBtn.style = "background:#d35400; color:white; margin-right:12px; padding:2px 8px; border-radius:4px; border:none; cursor:pointer;";
+        dropBtn.onclick = performEndShiftAuditDrop;
+        logoutBtn.parentNode.insertBefore(dropBtn, logoutBtn);
+    }
+    
     document.getElementById('barcode-input').focus();
 }
 
-function logout() {
-    localStorage.clear();
-    location.reload();
-}
-
-// Global Auth Check on Load
+// Global Auth Check on Initial Window Load Execution
 if (AUTH_TOKEN) {
     window.onload = () => showInterface(localStorage.getItem('cashier_name') || "Authorized Personnel");
 }
@@ -102,7 +189,37 @@ document.getElementById('barcode-input').addEventListener('keypress', async (e) 
     }
 });
 
-// --- 4. PRODUCT & CART UI ---
+// --- 4. LOYALTY PROFILE NETWORKING FRONT-END ACTIONS ---
+async function lookupLoyaltyCustomer() {
+    const rawInput = document.getElementById("loyalty-search-input").value.trim();
+    if (!rawInput) return alert("Please enter a phone number identifier.");
+
+    const formattedPhone = formatPhoneNumber(rawInput);
+    
+    try {
+        const res = await fetch(`${API_BASE_URL}/loyalty/${formattedPhone}/`, {
+            headers: { 'Authorization': `Token ${AUTH_TOKEN}` }
+        });
+        
+        if (res.ok) {
+            const profile = await res.json();
+            ACTIVE_CUSTOMER_PHONE = profile.phone_number;
+            
+            document.getElementById("loyalty-name-node").innerText = profile.full_name;
+            document.getElementById("loyalty-points-node").innerText = `${profile.points_balance} pts`;
+            document.getElementById("loyalty-status-display").style.display = "block";
+            document.getElementById("loyalty-pay-btn").style.display = "block";
+            
+            if (profile.is_new_registration) {
+                alert(`🏅 Registered walk-in account profile successfully for ${profile.phone_number}!`);
+            }
+        }
+    } catch(e) {
+        alert("Loyalty service temporary offline.");
+    }
+}
+
+// --- 5. PRODUCT & CART UI SYSTEM WITH FRACTIONAL MEASUREMENT INTEGRATION ---
 
 async function fetchProduct(identifier) {
     try {
@@ -122,14 +239,22 @@ async function fetchProduct(identifier) {
 
 function addToCart(product) {
     const existingIndex = cart.findIndex(item => item.id === product.id);
+    
+    // Extracted hardware scale quantities if present, else fallback to 1.0 unit integer
+    const scannedQty = product.auto_scale_qty ? parseFloat(product.auto_scale_qty) : 1.0;
+    
     if (existingIndex !== -1) {
-        cart[existingIndex].qty += 1;
+        // Increment units cleanly using fractional additions for weighed lines
+        cart[existingIndex].qty += scannedQty;
     } else {
         cart.push({
             id: product.id,
             name: product.name,
+            barcode: product.barcode,
             retail_price: parseFloat(product.retail_price),
-            qty: 1
+            qty: scannedQty,
+            is_weighed: product.is_weighed || false,
+            discount: 0.0
         });
     }
     updateUI();
@@ -139,29 +264,63 @@ function updateUI() {
     const cartTable = document.getElementById('cart-items');
     if (!cartTable) return;
 
-    cartTable.innerHTML = cart.map((item, index) => `
-        <tr>
-            <td>${item.name}</td>
-            <td>
-                <input type="number" value="${item.qty}" min="1" 
-                onchange="updateQty(${index}, this.value)" class="qty-input">
-            </td>
-            <td>${formatKsh(item.retail_price)}</td>
-            <td><b>${formatKsh(item.qty * item.retail_price)}</b></td>
-            <td><button onclick="removeItem(${index})" class="btn-void-small">Void</button></td>
-        </tr>`).join('');
+    let grossSubtotal = 0;
+    let totalPromotionalSavings = 0;
 
-    const subtotal = cart.reduce((sum, item) => sum + (item.qty * item.retail_price), 0);
-    const tax = subtotal * TAX_RATE;
-    const total = subtotal + tax;
+    cart.forEach(item => {
+        grossSubtotal += (item.qty * item.retail_price);
+        const promo = ACTIVE_PROMOTIONS[item.barcode];
+        item.discount = 0.0;
 
-    if(document.getElementById('subtotal')) document.getElementById('subtotal').innerText = formatKsh(subtotal);
-    if(document.getElementById('tax')) document.getElementById('tax').innerText = formatKsh(tax);
-    if(document.getElementById('grand-total')) document.getElementById('grand-total').innerText = formatKsh(total);
+        // Skip standard bundle algorithms on weighed dynamic scale items
+        if (promo && item.qty >= promo.reqQty && !item.is_weighed) {
+            if (promo.type === "QTY_DISCOUNT" && promo.promoPrice) {
+                const bundles = Math.floor(item.qty / promo.reqQty);
+                const normalBundleCost = item.retail_price * promo.reqQty * bundles;
+                const promoBundleCost = promo.promoPrice * bundles;
+                item.discount = normalBundleCost - promoBundleCost;
+            } else if (promo.type === "BOGO") {
+                const freeUnits = Math.floor(item.qty / promo.reqQty);
+                item.discount = item.retail_price * freeUnits;
+            }
+            totalPromotionalSavings += item.discount;
+        }
+    });
+
+    const netSubtotal = grossSubtotal - totalPromotionalSavings;
+
+    cartTable.innerHTML = cart.map((item, index) => {
+        const promoBadge = item.discount > 0 
+            ? `<br><small style="color: #2ecc71; font-weight: bold;">🎉 Saved: -${formatKsh(item.discount)}</small>` 
+            : "";
+            
+        return `
+            <tr>
+                <td><b>${item.name}</b>${promoBadge}</td>
+                <td>
+                    <input type="number" value="${item.qty}" step="${item.is_weighed ? '0.001' : '1'}" min="0.001" 
+                    onchange="updateQty(${index}, this.value)" class="qty-input" style="width:75px;">
+                    <span style="font-size:11px; color:#aaa;">${item.is_weighed ? 'kg' : 'pcs'}</span>
+                </td>
+                <td>${formatKsh(item.retail_price)}/${item.is_weighed ? 'kg' : 'pc'}</td>
+                <td><b>${formatKsh((item.qty * item.retail_price) - item.discount)}</b></td>
+                <td><button onclick="removeItem(${index})" class="btn-void-small">Void</button></td>
+            </tr>`;
+    }).join('');
+
+    if(document.getElementById('subtotal')) document.getElementById('subtotal').innerText = formatKsh(grossSubtotal);
+    
+    const discountLabel = document.getElementById('cart-discount');
+    if(discountLabel) {
+        discountLabel.innerText = formatKsh(totalPromotionalSavings);
+        discountLabel.style.color = totalPromotionalSavings > 0 ? '#2ecc71' : 'inherit';
+    }
+    
+    if(document.getElementById('grand-total')) document.getElementById('grand-total').innerText = formatKsh(netSubtotal);
 }
 
 function updateQty(index, newQty) {
-    cart[index].qty = parseInt(newQty) || 1;
+    cart[index].qty = cart[index].is_weighed ? parseFloat(newQty) : parseInt(newQty) || 1;
     updateUI();
 }
 
@@ -170,7 +329,7 @@ function removeItem(index) {
     updateUI();
 }
 
-// --- 5. M-PESA STK PUSH & AUTOMATED VERIFICATION ---
+// --- 6. MPESA STK PUSH & AUTOMATED VERIFICATION ---
 
 function processCheckout() {
     if (cart.length === 0) return alert("Empty Cart!");
@@ -179,19 +338,33 @@ function processCheckout() {
     document.getElementById('payment-modal').style.display = 'block';
 }
 
-/**
- * Orchestrates payment confirmation and backend verification
- */
 async function confirmPayment(method) {
-    let customerIdentifier = "";
-    const subtotal = cart.reduce((sum, item) => sum + (item.qty * item.retail_price), 0);
-    const totalAmount = subtotal * (1 + TAX_RATE);
+    let customerIdentifier = ACTIVE_CUSTOMER_PHONE; 
+
+    let grossSubtotal = 0;
+    let totalPromotionalSavings = 0;
+
+    cart.forEach(item => {
+        grossSubtotal += (item.qty * item.retail_price);
+        const promo = ACTIVE_PROMOTIONS[item.barcode];
+        if (promo && item.qty >= promo.reqQty && !item.is_weighed) {
+            if (promo.type === "QTY_DISCOUNT" && promo.promoPrice) {
+                const bundles = Math.floor(item.qty / promo.reqQty);
+                totalPromotionalSavings += ((item.retail_price * promo.reqQty * bundles) - promo.promoPrice * bundles);
+            } else if (promo.type === "BOGO") {
+                totalPromotionalSavings += (item.retail_price * Math.floor(item.qty / promo.reqQty));
+            }
+        }
+    });
+
+    const netFinalTotal = grossSubtotal - totalPromotionalSavings;
 
     if (method === 'MPESA') {
-        let rawPhone = prompt("Enter Customer M-Pesa Number (e.g., 0712345678):");
-        if (!rawPhone) return;
-        customerIdentifier = formatPhoneNumber(rawPhone);
-
+        if (!customerIdentifier) {
+            let rawPhone = prompt("Enter Customer M-Pesa Number (e.g., 0712345678):");
+            if (!rawPhone) return;
+            customerIdentifier = formatPhoneNumber(rawPhone);
+        }
         try {
             const stkRes = await fetch(`${API_BASE_URL}/v1/trigger-stk/`, {
                 method: 'POST',
@@ -199,12 +372,10 @@ async function confirmPayment(method) {
                     'Content-Type': 'application/json',
                     'Authorization': `Token ${AUTH_TOKEN}`
                 },
-                body: JSON.stringify({ phone: customerIdentifier, amount: totalAmount })
+                body: JSON.stringify({ phone: customerIdentifier, amount: netFinalTotal })
             });
 
-            // Parse response carefully to avoid HTML/JSON mismatch errors
             const stkData = await stkRes.json();
-
             if (stkRes.ok) {
                 alert("✅ M-Pesa Prompt sent to " + customerIdentifier);
             } else {
@@ -213,21 +384,20 @@ async function confirmPayment(method) {
         } catch (e) {
             return alert("❌ M-Pesa Error: " + e.message);
         }
-    } else if (method === 'CARD') {
+    } else if (method === 'CARD' && !customerIdentifier) {
         customerIdentifier = prompt("Enter Card Last 4 Digits:");
         if (!customerIdentifier) return;
     }
 
-    // Polling UI
     const modal = document.getElementById('payment-modal');
     const statusDiv = document.createElement('div');
     statusDiv.id = "payment-status-msg";
     statusDiv.style = "text-align:center; color:#e67e22; padding:10px; font-weight:bold;";
-    statusDiv.innerText = (method === 'CASH') ? "Finalizing..." : `⏳ Verifying ${method} payment...`;
+    statusDiv.innerText = (method === 'CASH' || method === 'LOYALTY') ? "Finalizing..." : `⏳ Verifying ${method} payment...`;
     modal.appendChild(statusDiv);
 
     let attempts = 0;
-    const maxAttempts = method === 'CASH' ? 1 : 20; 
+    const maxAttempts = (method === 'CASH' || method === 'LOYALTY') ? 1 : 20; 
 
     const pollVerification = async () => {
         try {
@@ -238,8 +408,12 @@ async function confirmPayment(method) {
                     'Authorization': `Token ${AUTH_TOKEN}`
                 },
                 body: JSON.stringify({
-                    items: cart,
-                    total: totalAmount,
+                    items: cart.map(item => ({
+                        id: item.id,
+                        qty: item.qty,
+                        retail_price: item.retail_price
+                    })),
+                    total: grossSubtotal, 
                     payment_method: method,
                     customer_number: customerIdentifier 
                 })
@@ -255,10 +429,26 @@ async function confirmPayment(method) {
                     alert("⚠️ LOW STOCK WARNING:\n" + result.alerts.map(a => `- ${a.name}: ${a.remaining} left`).join('\n'));
                 }
 
-                prepareReceipt(result.invoice, method, result.auto_reference);
+                if (result.promotional_savings > 0) {
+                    alert(`🎉 Special Campaign Promotion Applied!\nTotal Savings Received: Ksh ${result.promotional_savings.toFixed(2)}`);
+                }
+
+                if (result.points_earned > 0) {
+                    alert(`🏅 Loyalty Points Earned: +${result.points_earned} pts!\nNew Wallet Balance: ${result.new_points_balance} pts.`);
+                } else if (method === 'LOYALTY') {
+                    alert(`🔥 Points Redeemed successfully!\nRemaining Balance: ${result.new_points_balance} pts.`);
+                }
+
+                prepareReceipt(result.invoice, method, result.auto_reference, result.promotional_savings, result.points_earned, result.new_points_balance);
                 setTimeout(() => {
                     window.print();
+                    
                     cart = []; 
+                    ACTIVE_CUSTOMER_PHONE = "";
+                    document.getElementById("loyalty-search-input").value = "";
+                    document.getElementById("loyalty-status-display").style.display = "none";
+                    document.getElementById("loyalty-pay-btn").style.display = "none";
+                    
                     updateUI();
                 }, 500);
 
@@ -278,7 +468,7 @@ async function confirmPayment(method) {
     pollVerification();
 }
 
-// --- 6. ADMIN & ANALYTICS ---
+// --- 7. ADMIN & ANALYTICS ---
 
 function switchDashTab(tabName) {
     document.querySelectorAll('.dash-tab-content').forEach(tab => tab.style.display = 'none');
@@ -304,9 +494,6 @@ async function openAdminDashboard() {
     switchDashTab('performance');
 }
 
-/**
- * FIXED: Loads Dashboard Analytics with correct keys from Django
- */
 async function loadPerformanceMetrics() {
     try {
         const res = await fetch(`${API_BASE_URL}/reports/dashboard/`, {
@@ -314,14 +501,12 @@ async function loadPerformanceMetrics() {
         });
         const data = await res.json();
         
-        // Update the main stat cards
         document.getElementById('dash-content').innerHTML = `
             <div class="stat-card"><small>REVENUE</small><h2>${formatKsh(data.revenue)}</h2></div>
             <div class="stat-card" style="border-bottom-color:#3498db"><small>ORDERS</small><h2>${data.orders || 0}</h2></div>
             <div class="stat-card"><small>PROFIT</small><h2 style="color:#2ecc71">${formatKsh(data.profit)}</h2></div>
         `;
 
-        // FIXED: Using keys 'top_selling_product' and 'avg_sale_value' to match Django Response
         const topProdEl = document.getElementById('top-product');
         const avgSaleEl = document.getElementById('avg-sale');
 
@@ -345,7 +530,7 @@ async function loadInventoryLog() {
                 <tr>
                     <td>${p.name}</td>
                     <td>${p.barcode}</td>
-                    <td><b>${p.stock_qty}</b></td>
+                    <td><b>${parseFloat(p.stock_qty).toFixed(2)}</b></td>
                     <td><span class="badge ${p.stock_qty <= p.low_stock_threshold ? 'bg-danger' : 'bg-success'}">
                         ${p.stock_qty <= p.low_stock_threshold ? 'Low' : 'Good'}</span></td>
                     <td><button onclick="promptRestock(${p.id}, '${p.name}', ${p.stock_qty})" class="btn-void-small">Update</button></td>
@@ -362,7 +547,7 @@ async function promptRestock(productId, productName, currentStock) {
         const response = await fetch(`${API_BASE_URL}/products/adjust-stock/`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Authorization': `Token ${AUTH_TOKEN}` },
-            body: JSON.stringify({ product_id: productId, new_quantity: parseInt(newQty) })
+            body: JSON.stringify({ product_id: productId, new_quantity: parseFloat(newQty) })
         });
         if (response.ok) { loadInventoryLog(); }
     } catch (e) { alert("Stock update failed."); }
@@ -385,9 +570,6 @@ async function loadStaffAudit() {
     } catch (e) { console.error("Audit load failed"); }
 }
 
-/**
- * Sends a structured JSON payload package to save a new item into the software catalogue
- */
 async function handleProductCreation(event) {
     event.preventDefault();
 
@@ -396,7 +578,7 @@ async function handleProductCreation(event) {
         barcode: document.getElementById('new-prod-barcode').value.trim(),
         cost_price: parseFloat(document.getElementById('new-prod-cost').value),
         retail_price: parseFloat(document.getElementById('new-prod-retail').value),
-        stock_qty: parseInt(document.getElementById('new-prod-stock').value),
+        stock_qty: parseFloat(document.getElementById('new-prod-stock').value),
         low_stock_threshold: parseInt(document.getElementById('new-prod-threshold').value)
     };
 
@@ -424,7 +606,7 @@ async function handleProductCreation(event) {
     }
 }
 
-// --- 7. MANUAL SEARCH ---
+// --- 8. MANUAL SEARCH ---
 async function manualSearch() {
     const query = document.getElementById('manual-query').value;
     if (query.length < 2) return;
@@ -448,7 +630,7 @@ function handleManualSelect(product) {
     closeModal('search-modal'); 
 }
 
-// --- 8. DAILY Z-REPORT ---
+// --- 9. DAILY Z-REPORT ---
 async function showDailyReport() {
     try {
         const response = await fetch(`${API_BASE_URL}/reports/daily-summary/`, {
@@ -463,21 +645,40 @@ async function showDailyReport() {
     } catch (e) { alert("Failed to fetch report."); }
 }
 
-// --- 9. THERMAL RECEIPT ENGINE ---
+// --- 10. THERMAL RECEIPT ENGINE ---
 
-/**
- * Builds a 80mm standard receipt for thermal printing
- */
-function prepareReceipt(invoiceId, method, ref) {
+function prepareReceipt(invoiceId, method, ref, savingsAmount, ptsEarned, currentPtsTotal) {
     const receipt = document.getElementById('receipt-template');
     if (!receipt) return;
     receipt.style.display = 'block';
     
-    const itemsHtml = cart.map(i => `
-        <div style="display:flex; justify-content:space-between">
-            <span>${i.name.substring(0, 18)} x${i.qty}</span>
-            <span>${(i.qty * i.retail_price).toFixed(2)}</span>
-        </div>`).join('');
+    const itemsHtml = cart.map(i => {
+        const discountLine = i.discount > 0 ? `<br><small style="color:#000;">*Promo Discount Saved: -${i.discount.toFixed(2)}</small>` : "";
+        const qtyString = i.is_weighed ? i.qty.toFixed(3) + " kg" : parseInt(i.qty) + " pcs";
+        return `
+            <div style="display:flex; justify-content:space-between; margin-bottom: 3px;">
+                <span>${i.name.substring(0, 16)} ${qtyString}${discountLine}</span>
+                <span>${((i.qty * i.retail_price) - i.discount).toFixed(2)}</span>
+            </div>`;
+    }).join('');
+
+    const savingsBanner = savingsAmount > 0 
+        ? `<div style="display:flex; justify-content:space-between; color:green; font-weight:bold; font-size:12px; margin-top:4px;">
+                <span>🎯 TOTAL SAVINGS TODAY:</span>
+                <span>-${formatKsh(savingsAmount)}</span>
+           </div>` 
+        : "";
+
+    let loyaltyMetricsBanner = "";
+    if (ACTIVE_CUSTOMER_PHONE) {
+        loyaltyMetricsBanner = `
+            <hr style="border-top: 1px dotted black; margin: 6px 0;">
+            <div style="font-size: 11px; color: #000;">
+                🏅 Member Card: ${ACTIVE_CUSTOMER_PHONE}<br>
+                ${method === 'LOYALTY' ? `Points Redeemed: -${parseInt(document.getElementById('grand-total').innerText.replace(/[^0-9.]/g, ''))} pts` : `Points Awarded: +${ptsEarned} pts`}<br>
+                <b>Available Points Balance: ${currentPtsTotal} pts</b>
+            </div>`;
+    }
 
     receipt.innerHTML = `
         <div style="width: 80mm; padding: 5px; font-family: monospace; font-size: 13px; background: white; color: black; border: 1px solid #eee;">
@@ -488,16 +689,18 @@ function prepareReceipt(invoiceId, method, ref) {
             </center>
             ${itemsHtml}
             <hr style="border-top: 1px dashed black">
-            <div style="display:flex; justify-content:space-between; font-weight:bold">
-                <span>TOTAL (Inc VAT):</span>
+            <div style="display:flex; justify-content:space-between; font-weight:bold; font-size: 14px;">
+                <span>TOTAL PAID:</span>
                 <span>${document.getElementById('grand-total').innerText}</span>
             </div>
-            <div style="margin-top:5px"><b>PAYMENT: ${method}</b> ${ref ? `<br>Ref: ${ref}` : ''}</div>
-            <center><p style="margin-top:15px">Thank You for Shopping with Us!</p></center>
+            ${savingsBanner}
+            ${loyaltyMetricsBanner}
+            <div style="margin-top:8px"><b>PAYMENT METHOD: ${method}</b> ${ref ? `<br>Gateway Ref: ${ref}` : ''}</div>
+            <center><p style="margin-top:15px; font-size:11px;">Thank You for Shopping with Us!<br>Powered by UltraPOS Scale Module</p></center>
         </div>`;
 }
 
-// --- 10. MODAL & WINDOW CONTROL ---
+// --- 11. MODAL & WINDOW CONTROL ---
 function closeModal(id) { 
     const modal = document.getElementById(id);
     if(modal) modal.style.display = 'none';
@@ -513,7 +716,7 @@ function openSearchModal() {
     document.getElementById('manual-query').focus(); 
 }
 
-// --- 11. HOTKEYS & VOID ---
+// --- 12. HOTKEYS & VOID ---
 
 window.addEventListener('keydown', (e) => {
     if (e.key === 'F1') { e.preventDefault(); openSearchModal(); }
@@ -525,6 +728,7 @@ window.addEventListener('keydown', (e) => {
         if (e.key === '1') confirmPayment('CASH');
         if (e.key === '2') confirmPayment('MPESA');
         if (e.key === '3') confirmPayment('CARD');
+        if (e.key === '4' && ACTIVE_CUSTOMER_PHONE) confirmPayment('LOYALTY');
     }
 });
 
@@ -533,4 +737,9 @@ function voidCart() {
         cart = []; 
         updateUI(); 
     } 
+}
+
+function logout() {
+    localStorage.clear();
+    location.reload();
 }

@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Product
+from .models import Product, Promotion
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
@@ -34,3 +34,21 @@ class ProductAdmin(admin.ModelAdmin):
             return "⚠️ Low Stock"
         return "✅ Good"
     stock_status.short_description = "Inventory Health"
+
+
+@admin.register(Promotion)
+class PromotionAdmin(admin.ModelAdmin):
+    """
+    Exposes the multi-buy promotion engine rules configuration panel 
+    to back-office supervisors.
+    """
+    list_display = ('name', 'product', 'promo_type', 'required_qty', 'get_formatted_promo_price', 'is_active', 'end_date')
+    list_filter = ('is_active', 'promo_type', 'end_date', 'product')
+    search_fields = ('name', 'product__name', 'product__barcode')
+    ordering = ('-end_date',)
+
+    def get_formatted_promo_price(self, obj):
+        if obj.promo_price:
+            return f"Ksh {obj.promo_price:,.2f}"
+        return "N/A"
+    get_formatted_promo_price.short_description = "Bundle Promo Price"

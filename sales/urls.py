@@ -26,7 +26,16 @@ urlpatterns = [
     
     
     # =========================================================================
-    # 2. MANAGER INVENTORY STOCK MANAGEMENT (F2 Admin Dashboard Component)
+    # 2. CUSTOMER REWARDS & LOYALTY PROFILE SYSTEMS (Unique Supermarket Feature)
+    # =========================================================================
+    
+    # Target Lookup Endpoint for Loyalty Tracking:
+    # Queries or registers customer numbers at checkout lanes, showing name and point balances
+    path('api/loyalty/<str:phone_number>/', views.fetch_loyalty_profile, name='fetch-loyalty-profile'),
+    
+    
+    # =========================================================================
+    # 3. MANAGER INVENTORY STOCK MANAGEMENT (F2 Admin Dashboard Component)
     # =========================================================================
     
     # Endpoint required for the manual "Update Stock" adjustment button:
@@ -35,7 +44,7 @@ urlpatterns = [
     
     
     # =========================================================================
-    # 3. BUSINESS INTELLIGENCE REPORTING SYSTEMS (F2 / F9 Operational Screens)
+    # 4. BUSINESS INTELLIGENCE REPORTING SYSTEMS (F2 / F9 Operational Screens)
     # =========================================================================
     
     # Endpoint called by showDailyReport(): 
@@ -52,7 +61,7 @@ urlpatterns = [
 
 
     # =========================================================================
-    # 4. LIVE SAFARICOM M-PESA DARAJA API GATEWAY INTEGRATIONS
+    # 5. LIVE SAFARICOM M-PESA DARAJA API GATEWAY INTEGRATIONS
     # =========================================================================
     
     # Cashier Counter Initiation:
@@ -62,4 +71,9 @@ urlpatterns = [
     # Secure Public Incoming Webhook Callback Interceptor:
     # Catches real-time receipt parameters fired from Safaricom's firewalls via your ngrok tunnel
     path('api/v1/mpesa-callback/', views.mpesa_callback, name='mpesa-callback'),
+    # Endpoint called by handleShiftInitialization():
+    path('api/shifts/open/', views.open_shift, name='open-shift'),
+    
+    # Endpoint called by handleShiftAuditDrop():
+    path('api/shifts/close/', views.close_shift, name='close-shift'),
 ]
