@@ -8,6 +8,7 @@
 </head>
 <body>
 
+    <!-- 1. LOGIN & TERMINAL SECURITY GATEWAY -->
     <div id="login-screen">
         <div class="login-card">
             <h2 class="primary-text">NEXTGEN SYSTEMS LTD</h2>
@@ -18,6 +19,7 @@
         </div>
     </div>
 
+    <!-- 2. MAIN CORE HIGH-SPEED POINT OF SALE INTERFACE -->
     <div id="pos-interface" style="display:none;">
         <header>
             <div class="brand">ULTRA-POS <small>v1.0</small></div>
@@ -29,6 +31,7 @@
         </header>
 
         <main class="pos-main">
+            <!-- Left Panel: Live Cart Items Ledger View -->
             <section class="cart-section">
                 <table id="cart-table">
                     <thead>
@@ -41,13 +44,16 @@
                         </tr>
                     </thead>
                     <tbody id="cart-items">
+                        <!-- Items dynamically injected by JavaScript app engine -->
                     </tbody>
                 </table>
             </section>
 
+            <!-- Right Panel: Fixed Sidebar Layout Container -->
             <aside class="sidebar">
+                <!-- Loyalty Module Widget Box -->
                 <div class="total-box" style="background: #1e272e; border-bottom: 3px solid #f5dd5d; margin-bottom: 12px; padding: 12px;">
-                    <small style="color: #f5dd5d; text-transform: uppercase; letter-spacing: 0.5px; font-weight: bold; display: block; margin-bottom: 6px;">🏅 Supermarket Loyalty Profile</small>
+                    <small style="color: #f5dd5d; text-transform: uppercase; letter-spacing: 0.5px; font-weight: bold; display: block; margin-bottom: 6px;">📲 Supermarket Loyalty Profile</small>
                     <div style="display: flex; gap: 6px;">
                         <input type="text" id="loyalty-search-input" placeholder="Enter Phone (e.g. 07...)" style="flex: 1; padding: 6px; background: #2f3640; border: 1px solid #487eb0; color: white; border-radius: 4px; font-size: 13px;">
                         <button onclick="lookupLoyaltyCustomer()" style="background: #487eb0; color: white; border: none; padding: 0 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: bold;">LINK</button>
@@ -58,6 +64,7 @@
                     </div>
                 </div>
 
+                <!-- Financial Calculations Output Block -->
                 <div class="total-box">
                     <p>VAT (16% Included)</p>
                     <small>Gross Subtotal: <span id="subtotal">Ksh 0.00</span></small>
@@ -68,42 +75,73 @@
                     <h1 id="grand-total">Ksh 0.00</h1>
                 </div>
 
+                <!-- Action Button Matrix Layout -->
                 <div class="action-buttons">
                     <button class="btn-checkout" onclick="processCheckout()">CHECKOUT (F12)</button>
                     <button class="btn-report" onclick="showDailyReport()">DAILY Z-REPORT (F9)</button>
                     <button class="btn-report manager-btn" onclick="openAdminDashboard()">MANAGER ANALYTICS (F2)</button>
-                    <button class="btn-report" onclick="openSearchModal()">MANUAL SEARCH (F1)</button>
+                    <button class="btn-report" onclick="closeModal('search-modal') /* changed helper to trigger modal open natively */
+                     document.getElementById('search-modal').style.display='block'; document.getElementById('manual-query').focus();">MANUAL SEARCH (F1)</button>
                     <button class="btn-report void-btn" onclick="voidCart()">VOID ALL</button>
                 </div>
             </aside>
         </main>
     </div>
 
+    <!-- 3. ADVANCED MULTI-CHANNEL SPLIT PAYMENT TENDER MODAL -->
     <div id="payment-modal" class="modal">
-        <div class="modal-content" style="max-width: 400px; text-align: center;">
-            <h3 style="margin-bottom: 5px;">Select Payment Method</h3>
-            <h1 id="modal-total-display" style="color: var(--primary); margin-top: 0;">Ksh 0.00</h1>
+        <div class="modal-content" style="max-width: 450px; text-align: left; padding: 25px;">
+            <center>
+                <h3 style="margin-bottom: 5px;">Split Payments Accounting Ledger</h3>
+                <h1 id="modal-total-display" style="color: var(--primary); margin: 5px 0;">Ksh 0.00</h1>
+            </center>
             
-            <div class="payment-grid" style="display: grid; gap: 12px; margin-top: 20px;">
-                <button class="btn-checkout" onclick="confirmPayment('CASH')" style="background: #27ae60;">CASH (1)</button>
-                <button class="btn-checkout" onclick="confirmPayment('MPESA')" style="background: #1e8449;">M-PESA (2)</button>
-                <button class="btn-checkout" onclick="confirmPayment('CARD')" style="background: #2c3e50;">BANK CARD (3)</button>
-                <button id="loyalty-pay-btn" class="btn-checkout" onclick="confirmPayment('LOYALTY')" style="background: #d35400; display: none;">🔥 REDEEM REWARD POINTS (4)</button>
+            <div style="background:#f1c40f; color:#111; font-weight:bold; padding:8px; text-align:center; border-radius:4px; margin-bottom:15px; font-size:14px;">
+                Remaining Balance to Settle: <span id="remaining-balance-display">Ksh 0.00</span>
             </div>
-            
-            <div id="payment-status-container" style="margin-top: 15px;"></div>
 
-            <button class="btn-void-small" onclick="closeModal('payment-modal')" style="margin-top: 25px; width: 100%;">Cancel Transaction</button>
+            <div style="background:#f8f9fa; border:1px solid #ddd; padding:12px; border-radius:6px; margin-bottom:15px;">
+                <label style="font-size:11px; font-weight:bold; text-transform:uppercase; color:#555; display:block; margin-bottom:4px;">Add Tender Track Line</label>
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <div style="display:flex; gap:8px;">
+                        <select id="split-method-select" style="padding:8px; border-radius:4px; border:1px solid #ccc; font-weight:bold; font-size:13px; background:white; min-width:150px;">
+                            <option value="CASH">💵 CASH TENDER</option>
+                            <option value="MPESA">📱 M-PESA STK</option>
+                            <option value="CARD">💳 BANK CARD</option>
+                            <option value="LOYALTY" id="loyalty-pay-btn" style="display:none;">🪙 REWARD RE-USE</option>
+                        </select>
+                        <input type="number" id="split-amount-input" placeholder="Amount (Ksh)" step="0.01" style="flex:1; padding:8px; border-radius:4px; border:1px solid #ccc; font-size:13px;">
+                    </div>
+
+                    <div style="display:flex; gap:6px;">
+                        <button onclick="addSplitPaymentLine()" style="width:100%; background:#2980b9; color:white; border:none; padding:10px; border-radius:4px; font-weight:bold; cursor:pointer;">+ ADD LINE</button>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-bottom:20px;">
+                <span style="font-size:11px; font-weight:bold; color:#7f8c8d; text-transform:uppercase;">Active Ledger Split Distribution:</span>
+                <div id="split-payments-list" style="background:#fff; border:1px solid #eee; padding:8px; border-radius:4px; min-height:60px; max-height:140px; overflow-y:auto; margin-top:5px;">
+                    <em>No payments added yet.</em>
+                </div>
+            </div>
+
+            <button id="final-split-submit-btn" class="btn-checkout" onclick="submitFinalSplitCheckout()" style="width:100%; background:#7f8c8d;" disabled>
+                📟 TRANSMIT INVOICE TO KRA (eTIMS)
+            </button>
+            <button class="btn-void-small" onclick="closeModal('payment-modal')" style="margin-top:10px; width:100%;">Abandon Transaction</button>
         </div>
     </div>
 
+    <!-- 4. ADMINISTRATIVE BACK-OFFICE ANALYTICS DASHBOARD MODAL -->
     <div id="admin-dashboard" class="dashboard-overlay">
         <div class="wider-dashboard">
             <div class="dashboard-sidebar">
                 <h3 style="color: white; padding: 0 25px; margin-bottom: 30px; letter-spacing: 1px;">ADMIN PANEL</h3>
-                <div class="dash-nav-item" id="nav-perf" onclick="switchDashTab('performance')">Performance</div>
+                <div class="dash-nav-item active" id="nav-per" onclick="switchDashTab('performance')">Performance</div>
                 <div class="dash-nav-item" id="nav-inv" onclick="switchDashTab('inventory')">Inventory Log</div>
-                <div class="dash-nav-item" id="nav-staff" onclick="switchDashTab('staff')">Staff Audit</div>
+                <div class="dash-nav-item" id="nav-cat" onclick="switchDashTab('catalog')">Ingest Product</div>
+                <div class="dash-nav-item" id="nav-sta" onclick="switchDashTab('staff')">Staff Audit</div>
                 
                 <button class="close-dash-btn" onclick="closeModal('admin-dashboard')">EXIT ADMIN</button>
             </div>
@@ -111,8 +149,7 @@
             <div class="dashboard-main-content">
                 <div id="performance-tab" class="dash-tab-content">
                     <h2 style="margin-top:0;">Business Intelligence Overview</h2>
-                    <div class="stats-grid" id="dash-content">
-                    </div>
+                    <div class="stats-grid" id="dash-content"></div>
                     
                     <div class="secondary-metrics">
                         <div class="metric-box">
@@ -144,6 +181,43 @@
                     </div>
                 </div>
 
+                <div id="catalog-tab" class="dash-tab-content" style="display:none;">
+                    <h2 style="margin-top:0;">Ingest New SKU to Catalog</h2>
+                    <form id="add-product-form" onsubmit="handleProductCreation(event)" style="background:white; padding:20px; border-radius:6px; border:1px solid #ddd; max-width:500px; display:grid; gap:12px;">
+                        <div>
+                            <label style="font-weight:bold; font-size:12px; display:block; margin-bottom:4px;">Item Description / Name</label>
+                            <input type="text" id="new-prod-name" required style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                        </div>
+                        <div>
+                            <label style="font-weight:bold; font-size:12px; display:block; margin-bottom:4px;">EAN/UPC Barcode String</label>
+                            <input type="text" id="new-prod-barcode" required style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                            <div>
+                                <label style="font-weight:bold; font-size:12px; display:block; margin-bottom:4px;">Cost Price (Ksh)</label>
+                                <input type="number" id="new-prod-cost" step="0.01" required style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                            </div>
+                            <div>
+                                <label style="font-weight:bold; font-size:12px; display:block; margin-bottom:4px;">Retail Shelf Price (Ksh)</label>
+                                <input type="number" id="new-prod-retail" step="0.01" required style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                            </div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                            <div>
+                                <label style="font-weight:bold; font-size:12px; display:block; margin-bottom:4px;">Initial Stock Count</label>
+                                <input type="number" id="new-prod-stock" step="0.001" required style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                            </div>
+                            <div>
+                                <label style="font-weight:bold; font-size:12px; display:block; margin-bottom:4px;">Low Alert Threshold</label>
+                                <input type="number" id="new-prod-threshold" value="10" required style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px;">
+                            </div>
+                        </div>
+                        <button type="submit" style="background:#2ecc71; color:white; font-weight:bold; border:none; padding:10px; border-radius:4px; cursor:pointer; margin-top:10px;">
+                            💾 SAVE SYSTEM SKU RECORD
+                        </button>
+                    </form>
+                </div>
+
                 <div id="staff-tab" class="dash-tab-content" style="display:none;">
                     <h2 style="margin-top:0;">Cashier Performance Leaderboard</h2>
                     <div id="staff-audit-list">
@@ -154,6 +228,7 @@
         </div>
     </div>
 
+    <!-- 5. MANUAL PRODUCT SEARCH INVENTORY MODAL CONTAINER -->
     <div id="search-modal" class="modal">
         <div class="modal-content">
             <span class="close" onclick="closeModal('search-modal')">&times;</span>
@@ -163,6 +238,7 @@
         </div>
     </div>
 
+    <!-- 6. PERIODIC DAILY END OF DAY CLOSING MANAGER Z-REPORT MODAL -->
     <div id="report-modal" class="modal">
         <div class="modal-content printable-area">
             <span class="close no-print" onclick="closeModal('report-modal')">&times;</span>
@@ -171,12 +247,13 @@
                 <p id="report-date-title"></p>
             </div>
             <hr>
-            <div id="report-data" class="report-body">
-            </div>
-            <button class="btn-login print-btn no-print" onclick="window.print()" style="margin-top: 20px;">PRINT REPORT</button>
+            <div id="report-data" class="report-body"></div>
+            <!-- Routed through the safe executeSystemPrintJob method -->
+            <button class="btn-login print-btn no-print" onclick="executeSystemPrintJob()" style="margin-top: 20px;">PRINT REPORT</button>
         </div>
     </div>
 
+    <!-- 7. ISOLATED TARGET STANDALONE THERMAL RECEIPT INTERFACE NODE -->
     <div id="receipt-template" class="receipt-print-only"></div>
 
     <script src="app.js"></script>

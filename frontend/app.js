@@ -2,7 +2,7 @@
  * NEXTGEN SYSTEMS LIMITED - ULTRAPOS v1.0
  * -------------------------------------------
  * High-Speed Multi-Channel Supermarket Payment & Stock Management
- * ABSOLUTE FINAL INTEGRATED PRODUCTION VERSION
+ * ABSOLUTE FINAL INTEGRATED PRODUCTION VERSION WITH ADAPTIVE Z-REPORT PRINT ENGINE
  */
 
 let cart = [];
@@ -10,6 +10,9 @@ let ACTIVE_CUSTOMER_PHONE = ""; // Tracks linked loyalty customer account phone 
 let AUTH_TOKEN = localStorage.getItem('pos_token') || null;
 const API_BASE_URL = 'http://127.0.0.1:8000/api';
 const TAX_RATE = 0.16; // 16% VAT Included in calculations
+
+// Global placeholder storage for holding split payment inputs during accounting verification
+let activeSplitPayments = [];
 
 // --- 0. UNIQUE SUPERMARKET LOCAL PROMOTION CONSTANTS ---
 const ACTIVE_PROMOTIONS = {
@@ -55,7 +58,6 @@ async function handleLogin() {
             localStorage.setItem('pos_token', data.token); 
             localStorage.setItem('cashier_name', user);
             
-            // Advance directly to shift float allocation constraints
             await initializeShiftFloat(user);
         } else {
             alert("Login Failed: Unauthorized Access.");
@@ -85,7 +87,6 @@ async function initializeShiftFloat(cashierName) {
         });
         
         if (res.ok) {
-            // Unveil main dashboard natively bypassing reload token breaking drops
             showInterface(cashierName);
         } else {
             alert("Backend rejected shift allocation setup.");
@@ -114,9 +115,7 @@ async function performEndShiftAuditDrop() {
         
         if (res.ok) {
             const audit = await res.json();
-            console.log("Shift Audit Raw Response Payload:", audit);
             
-            // Safe variance access using fallbacks to prevent UI runtime property access crashes
             const vCash = audit.variance && audit.variance.cash !== undefined ? audit.variance.cash : 0;
             const vMpesa = audit.variance && audit.variance.mpesa !== undefined ? audit.variance.mpesa : 0;
             const vCard = audit.variance && audit.variance.card !== undefined ? audit.variance.card : 0;
@@ -134,8 +133,6 @@ async function performEndShiftAuditDrop() {
             alert("Error closing current shift session: " + JSON.stringify(errData));
         }
     } catch(e) {
-        console.error("Runtime exception intercepted: ", e);
-        alert(`Runtime Notice: Processing complete, but UI formatting encountered a local exception: ${e.message}. Logging out...`);
         logout();
     }
 }
@@ -145,7 +142,6 @@ function showInterface(cashierName) {
     document.getElementById('pos-interface').style.display = 'block';
     document.getElementById('cashier-display').innerText = cashierName;
     
-    // Append explicit "End Shift" close element programmatically to header tracking navigation row
     const logoutBtn = document.querySelector('.logout-link');
     if (logoutBtn && !document.getElementById('shift-drop-btn')) {
         const dropBtn = document.createElement('button');
@@ -160,7 +156,6 @@ function showInterface(cashierName) {
     document.getElementById('barcode-input').focus();
 }
 
-// Global Auth Check on Initial Window Load Execution
 if (AUTH_TOKEN) {
     window.onload = () => showInterface(localStorage.getItem('cashier_name') || "Authorized Personnel");
 }
@@ -219,7 +214,7 @@ async function lookupLoyaltyCustomer() {
     }
 }
 
-// --- 5. PRODUCT & CART UI SYSTEM WITH FRACTIONAL MEASUREMENT INTEGRATION ---
+// --- 5. PRODUCT & CART UI SYSTEM ---
 
 async function fetchProduct(identifier) {
     try {
@@ -239,12 +234,9 @@ async function fetchProduct(identifier) {
 
 function addToCart(product) {
     const existingIndex = cart.findIndex(item => item.id === product.id);
-    
-    // Extracted hardware scale quantities if present, else fallback to 1.0 unit integer
     const scannedQty = product.auto_scale_qty ? parseFloat(product.auto_scale_qty) : 1.0;
     
     if (existingIndex !== -1) {
-        // Increment units cleanly using fractional additions for weighed lines
         cart[existingIndex].qty += scannedQty;
     } else {
         cart.push({
@@ -272,7 +264,6 @@ function updateUI() {
         const promo = ACTIVE_PROMOTIONS[item.barcode];
         item.discount = 0.0;
 
-        // Skip standard bundle algorithms on weighed dynamic scale items
         if (promo && item.qty >= promo.reqQty && !item.is_weighed) {
             if (promo.type === "QTY_DISCOUNT" && promo.promoPrice) {
                 const bundles = Math.floor(item.qty / promo.reqQty);
@@ -329,18 +320,24 @@ function removeItem(index) {
     updateUI();
 }
 
-// --- 6. MPESA STK PUSH & AUTOMATED VERIFICATION ---
+// --- 6. ADVANCED CHECKOUT: SPLIT PAYMENT LEDGER CONTROLS ---
+
+function toggleSplitPhoneField() {
+    const method = document.getElementById('split-method-select').value;
+    const phoneContainer = document.getElementById('split-phone-container');
+    if (phoneContainer) {
+        if (method === 'MPESA') {
+            phoneContainer.style.display = 'block';
+        } else {
+            phoneContainer.style.display = 'none';
+        }
+    }
+}
 
 function processCheckout() {
     if (cart.length === 0) return alert("Empty Cart!");
-    const totalText = document.getElementById('grand-total').innerText;
-    document.getElementById('modal-total-display').innerText = totalText;
-    document.getElementById('payment-modal').style.display = 'block';
-}
-
-async function confirmPayment(method) {
-    let customerIdentifier = ACTIVE_CUSTOMER_PHONE; 
-
+    
+    activeSplitPayments = [];
     let grossSubtotal = 0;
     let totalPromotionalSavings = 0;
 
@@ -359,12 +356,40 @@ async function confirmPayment(method) {
 
     const netFinalTotal = grossSubtotal - totalPromotionalSavings;
 
+    document.getElementById('modal-total-display').innerText = formatKsh(netFinalTotal);
+    document.getElementById('remaining-balance-display').innerText = formatKsh(netFinalTotal);
+    document.getElementById('split-payments-list').innerHTML = "<em>No payments added yet.</em>";
+    
+    document.getElementById('payment-modal').style.display = 'block';
+}
+
+async function addSplitPaymentLine() {
+    const method = document.getElementById('split-method-select').value;
+    const amountInput = document.getElementById('split-amount-input');
+    const amount = parseFloat(amountInput.value) || 0;
+    
+    if (amount <= 0) return alert("Please enter a valid payment balance amount.");
+
+    let totalDue = 0;
+    cart.forEach(item => { totalDue += (item.qty * item.retail_price) - (item.discount || 0); });
+    
+    const currentAllocated = activeSplitPayments.reduce((acc, p) => acc + p.amount, 0);
+    const leftToPay = parseFloat((totalDue - currentAllocated).toFixed(2));
+
     if (method === 'MPESA') {
-        if (!customerIdentifier) {
-            let rawPhone = prompt("Enter Customer M-Pesa Number (e.g., 0712345678):");
-            if (!rawPhone) return;
-            customerIdentifier = formatPhoneNumber(rawPhone);
+        let stkIdentifier = ACTIVE_CUSTOMER_PHONE;
+        const dedicatedPhoneInput = document.getElementById('split-mpesa-phone');
+        
+        if (dedicatedPhoneInput && dedicatedPhoneInput.value.trim()) {
+            stkIdentifier = formatPhoneNumber(dedicatedPhoneInput.value.trim());
         }
+        
+        if (!stkIdentifier) {
+            let rawPhone = prompt("Enter Customer M-Pesa Number for STK Push (e.g., 0712345678):");
+            if (!rawPhone) return;
+            stkIdentifier = formatPhoneNumber(rawPhone);
+        }
+        
         try {
             const stkRes = await fetch(`${API_BASE_URL}/v1/trigger-stk/`, {
                 method: 'POST',
@@ -372,100 +397,132 @@ async function confirmPayment(method) {
                     'Content-Type': 'application/json',
                     'Authorization': `Token ${AUTH_TOKEN}`
                 },
-                body: JSON.stringify({ phone: customerIdentifier, amount: netFinalTotal })
+                body: JSON.stringify({ phone: stkIdentifier, amount: amount })
             });
 
             const stkData = await stkRes.json();
             if (stkRes.ok) {
-                alert("✅ M-Pesa Prompt sent to " + customerIdentifier);
+                alert("✅ M-Pesa STK Prompt sent to phone: " + stkIdentifier);
+                if(!ACTIVE_CUSTOMER_PHONE) ACTIVE_CUSTOMER_PHONE = stkIdentifier;
             } else {
                 throw new Error(stkData.error || stkData.message || "STK Push failed");
             }
         } catch (e) {
-            return alert("❌ M-Pesa Error: " + e.message);
+            return alert("❌ M-Pesa Request Error: " + e.message);
         }
-    } else if (method === 'CARD' && !customerIdentifier) {
-        customerIdentifier = prompt("Enter Card Last 4 Digits:");
-        if (!customerIdentifier) return;
     }
+
+    if (amount > (leftToPay + 0.01)) {
+         return alert(`Overpayment Error! Only ${formatKsh(leftToPay)} is remaining on this transaction.`);
+    }
+
+    activeSplitPayments.push({ method: method, amount: amount });
+    amountInput.value = ""; 
+    if(document.getElementById('split-mpesa-phone')) document.getElementById('split-mpesa-phone').value = "";
+
+    updateSplitPaymentUI(totalDue);
+}
+
+function updateSplitPaymentUI(totalDue) {
+    const listEl = document.getElementById('split-payments-list');
+    const currentAllocated = activeSplitPayments.reduce((acc, p) => acc + p.amount, 0);
+    const remaining = parseFloat((totalDue - currentAllocated).toFixed(2));
+
+    listEl.innerHTML = activeSplitPayments.map((p, index) => `
+        <div style="display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid #eee; font-size:13px;">
+            <span>💳 <b>${p.method}</b></span>
+            <span>${formatKsh(p.amount)} <button onclick="removeSplitLine(${index}, ${totalDue})" style="color:#e74c3c; border:none; background:none; cursor:pointer; font-weight:bold;">❌</button></span>
+        </div>
+    `).join('');
+
+    document.getElementById('remaining-balance-display').innerText = formatKsh(remaining);
+    
+    const payBtn = document.getElementById('final-split-submit-btn');
+    if (remaining <= 0) {
+         payBtn.disabled = false;
+         payBtn.style.background = "#2ecc71";
+    } else {
+         payBtn.disabled = true;
+         payBtn.style.background = "#7f8c8d";
+    }
+}
+
+function removeSplitLine(index, totalDue) {
+    activeSplitPayments.splice(index, 1);
+    updateSplitPaymentUI(totalDue);
+}
+
+async function submitFinalSplitCheckout() {
+    let grossSubtotal = 0;
+    cart.forEach(item => { grossSubtotal += (item.qty * item.retail_price); });
 
     const modal = document.getElementById('payment-modal');
     const statusDiv = document.createElement('div');
     statusDiv.id = "payment-status-msg";
     statusDiv.style = "text-align:center; color:#e67e22; padding:10px; font-weight:bold;";
-    statusDiv.innerText = (method === 'CASH' || method === 'LOYALTY') ? "Finalizing..." : `⏳ Verifying ${method} payment...`;
+    statusDiv.innerText = "⏳ Requesting KRA eTIMS Signature Validation...";
     modal.appendChild(statusDiv);
 
-    let attempts = 0;
-    const maxAttempts = (method === 'CASH' || method === 'LOYALTY') ? 1 : 20; 
+    try {
+        const response = await fetch(`${API_BASE_URL}/checkout/`, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Token ${AUTH_TOKEN}`
+            },
+            body: JSON.stringify({
+                items: cart.map(item => ({ id: item.id, qty: item.qty, retail_price: item.retail_price })),
+                total: grossSubtotal,
+                split_payments: activeSplitPayments,
+                customer_number: ACTIVE_CUSTOMER_PHONE
+            })
+        });
 
-    const pollVerification = async () => {
-        try {
-            const response = await fetch(`${API_BASE_URL}/checkout/`, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Token ${AUTH_TOKEN}`
-                },
-                body: JSON.stringify({
-                    items: cart.map(item => ({
-                        id: item.id,
-                        qty: item.qty,
-                        retail_price: item.retail_price
-                    })),
-                    total: grossSubtotal, 
-                    payment_method: method,
-                    customer_number: customerIdentifier 
-                })
-            });
+        const result = await response.json();
+        statusDiv.remove();
 
-            const result = await response.json();
+        if (response.ok && result.verified) {
+            // FORCE BRUTE-FORCE DESTRUCTION OF THE MODAL BACKDROP OVERLAYS
+            closeModal('payment-modal');
 
-            if (response.ok && result.verified) {
-                statusDiv.remove();
-                closeModal('payment-modal');
+            // BACK UP CART WORKSPACE FOR RECEIPT DISPLAY
+            const receiptCartInstance = JSON.parse(JSON.stringify(cart));
+            const receiptPaymentsInstance = JSON.parse(JSON.stringify(activeSplitPayments));
+            const receiptCustomerPhone = ACTIVE_CUSTOMER_PHONE;
 
-                if (result.alerts && result.alerts.length > 0) {
-                    alert("⚠️ LOW STOCK WARNING:\n" + result.alerts.map(a => `- ${a.name}: ${a.remaining} left`).join('\n'));
+            // WIPE ALL ACTIVE DATA TO PREVENT RESUBMISSIONS
+            cart = []; 
+            activeSplitPayments = [];
+            ACTIVE_CUSTOMER_PHONE = "";
+            
+            const loyaltySearch = document.getElementById("loyalty-search-input");
+            if(loyaltySearch) loyaltySearch.value = "";
+            if(document.getElementById("loyalty-status-display")) document.getElementById("loyalty-status-display").style.setProperty('display', 'none', 'important');
+            if(document.getElementById("loyalty-pay-btn")) document.getElementById("loyalty-pay-btn").style.setProperty('display', 'none', 'important');
+            
+            // RESET THE CART INTERFACE BACK TO KSH 0.00
+            updateUI(); 
+
+            // RENDER THE RECEIPT SAFELY WITHOUT TRIGGERING WINDOW.PRINT() HANGS
+            prepareReceiptIndependent(receiptCartInstance, receiptPaymentsInstance, receiptCustomerPhone, result.invoice, result.etims, result.promotional_savings, result.points_earned, result.new_points_balance);
+            
+            // RE-ENGAGE FOCUS AGGRESSIVELY ON THE BARCODE SCANNER FIELD
+            setTimeout(() => {
+                const bInput = document.getElementById('barcode-input');
+                if (bInput) {
+                    bInput.removeAttribute('disabled');
+                    bInput.focus();
                 }
+            }, 50);
 
-                if (result.promotional_savings > 0) {
-                    alert(`🎉 Special Campaign Promotion Applied!\nTotal Savings Received: Ksh ${result.promotional_savings.toFixed(2)}`);
-                }
-
-                if (result.points_earned > 0) {
-                    alert(`🏅 Loyalty Points Earned: +${result.points_earned} pts!\nNew Wallet Balance: ${result.new_points_balance} pts.`);
-                } else if (method === 'LOYALTY') {
-                    alert(`🔥 Points Redeemed successfully!\nRemaining Balance: ${result.new_points_balance} pts.`);
-                }
-
-                prepareReceipt(result.invoice, method, result.auto_reference, result.promotional_savings, result.points_earned, result.new_points_balance);
-                setTimeout(() => {
-                    window.print();
-                    
-                    cart = []; 
-                    ACTIVE_CUSTOMER_PHONE = "";
-                    document.getElementById("loyalty-search-input").value = "";
-                    document.getElementById("loyalty-status-display").style.display = "none";
-                    document.getElementById("loyalty-pay-btn").style.display = "none";
-                    
-                    updateUI();
-                }, 500);
-
-            } else if (attempts < maxAttempts) {
-                attempts++;
-                setTimeout(pollVerification, 2500); 
-            } else {
-                statusDiv.remove();
-                alert(result.message || `Payment verification timed out.`);
-            }
-        } catch (error) {
-            statusDiv.remove();
-            alert("Critical Error: Connection lost.");
+            console.log("Transaction closed successfully. Screen cleared.");
+        } else {
+            alert("Checkout Refused: " + (result.message || "Unknown ledger variation error."));
         }
-    };
-
-    pollVerification();
+    } catch (error) {
+        if(document.getElementById('payment-status-msg')) statusDiv.remove();
+        alert("Critical Error: Core database handshake timeout lost.");
+    }
 }
 
 // --- 7. ADMIN & ANALYTICS ---
@@ -630,37 +687,76 @@ function handleManualSelect(product) {
     closeModal('search-modal'); 
 }
 
-// --- 9. DAILY Z-REPORT ---
+// --- 9. DAILY Z-REPORT ENGINE HOTFIX ---
 async function showDailyReport() {
     try {
         const response = await fetch(`${API_BASE_URL}/reports/daily-summary/`, {
             headers: { 'Authorization': `Token ${AUTH_TOKEN}` }
         });
         const data = await response.json();
+        
+        const dateTitle = document.getElementById('report-date-title');
+        if (dateTitle) {
+            dateTitle.innerText = "Generated: " + new Date().toLocaleString('en-KE');
+        }
+
         document.getElementById('report-data').innerHTML = `
-            <p>Total Transactions: <b>${data.total_sales_count}</b></p>
-            <p>Gross Revenue: <b>${formatKsh(data.gross_revenue)}</b></p>
-            <p style="color:green">Net Profit: <b>${formatKsh(data.estimated_profit)}</b></p>`;
+            <div style="font-family:monospace; line-height:1.6; font-size:14px; color:#000;">
+                <p>🔢 Total Transactions Settled: <b style="float:right;">${data.total_sales_count}</b></p>
+                <p>💰 Gross Supermarket Revenue: <b style="float:right;">${formatKsh(data.gross_revenue)}</b></p>
+                <p style="color:#27ae60; border-top:1px dashed #000; padding-top:6px;">📈 Evaluated Net Profit Volume: <b style="float:right;">${formatKsh(data.estimated_profit)}</b></p>
+            </div>`;
+        
+        // RE-BIND PRINT BUTTON SAFELY WITHOUT TRAPPING WINDOW CONTEXTS
+        const modalContent = document.querySelector('#report-modal .modal-content');
+        let printBtn = modalContent.querySelector('.print-btn');
+        if (printBtn) {
+            printBtn.onclick = function() {
+                // Instantly force complete breakdown cleanup of ALL modals before calling print thread
+                document.querySelectorAll('.modal').forEach(m => m.style.setProperty('display', 'none', 'important'));
+                
+                // Allow DOM structure to complete layout processing then invoke system window
+                setTimeout(() => {
+                    window.print();
+                    
+                    // Force focus back to barcode collection once window completes
+                    setTimeout(() => {
+                        const bInput = document.getElementById('barcode-input');
+                        if (bInput) bInput.focus();
+                    }, 100);
+                }, 50);
+            };
+        }
+
         document.getElementById('report-modal').style.display = 'block';
-    } catch (e) { alert("Failed to fetch report."); }
+    } catch (e) { alert("Failed to fetch report summary dataset."); }
 }
 
-// --- 10. THERMAL RECEIPT ENGINE ---
+// --- 10. MANDATORY KRA eTIMS COMPLIANT THERMAL RECEIPT ENGINE ---
 
-function prepareReceipt(invoiceId, method, ref, savingsAmount, ptsEarned, currentPtsTotal) {
+function prepareReceiptIndependent(cartInstance, paymentBreakdown, linkedPhone, invoiceId, etimsData, savingsAmount, ptsEarned, currentPtsTotal) {
     const receipt = document.getElementById('receipt-template');
     if (!receipt) return;
     receipt.style.display = 'block';
     
-    const itemsHtml = cart.map(i => {
+    let cartTotal = 0;
+    const itemsHtml = cartInstance.map(i => {
         const discountLine = i.discount > 0 ? `<br><small style="color:#000;">*Promo Discount Saved: -${i.discount.toFixed(2)}</small>` : "";
         const qtyString = i.is_weighed ? i.qty.toFixed(3) + " kg" : parseInt(i.qty) + " pcs";
+        cartTotal += ((i.qty * i.retail_price) - i.discount);
         return `
-            <div style="display:flex; justify-content:space-between; margin-bottom: 3px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom: 3px; font-size:12px;">
                 <span>${i.name.substring(0, 16)} ${qtyString}${discountLine}</span>
                 <span>${((i.qty * i.retail_price) - i.discount).toFixed(2)}</span>
             </div>`;
     }).join('');
+
+    const paymentsHtml = paymentBreakdown.map(p => `
+        <div style="display:flex; justify-content:space-between; font-size:11px;">
+            <span> - Paid via ${p.method}:</span>
+            <span>Ksh ${p.amount.toFixed(2)}</span>
+        </div>
+    `).join('');
 
     const savingsBanner = savingsAmount > 0 
         ? `<div style="display:flex; justify-content:space-between; color:green; font-weight:bold; font-size:12px; margin-top:4px;">
@@ -670,49 +766,67 @@ function prepareReceipt(invoiceId, method, ref, savingsAmount, ptsEarned, curren
         : "";
 
     let loyaltyMetricsBanner = "";
-    if (ACTIVE_CUSTOMER_PHONE) {
+    if (linkedPhone) {
         loyaltyMetricsBanner = `
             <hr style="border-top: 1px dotted black; margin: 6px 0;">
             <div style="font-size: 11px; color: #000;">
-                🏅 Member Card: ${ACTIVE_CUSTOMER_PHONE}<br>
-                ${method === 'LOYALTY' ? `Points Redeemed: -${parseInt(document.getElementById('grand-total').innerText.replace(/[^0-9.]/g, ''))} pts` : `Points Awarded: +${ptsEarned} pts`}<br>
-                <b>Available Points Balance: ${currentPtsTotal} pts</b>
+                🏅 Member Profile Card: ${linkedPhone}<br>
+                Points Awarded This Visit: +${ptsEarned} pts<br>
+                <b>Available Points Wallet Balance: ${currentPtsTotal} pts</b>
             </div>`;
     }
 
     receipt.innerHTML = `
-        <div style="width: 80mm; padding: 5px; font-family: monospace; font-size: 13px; background: white; color: black; border: 1px solid #eee;">
+        <div style="width: 80mm; padding: 6px; font-family: monospace; background: white; color: black; border: 1px solid #000; margin-top: 15px;">
             <center>
-                <h3>NEXTGEN ULTRA POS</h3>
-                <p>Invoice: #${invoiceId}<br>${new Date().toLocaleString('en-KE')}</p>
-                <hr style="border-top: 1px dashed black">
+                <h2 style="margin:0;">NEXTGEN SUPERMARKET</h2>
+                <small>eTIMS TAX COMPLIANT INVOICE</small><br>
+                <small>Invoice Reference: #${invoiceId}</small><br>
+                <small>KRA Device Serial: ${etimsData.kra_serial}</small><br>
+                <small>${new Date().toLocaleString('en-KE')}</small>
+                <hr style="border-top:1px dashed #000;">
             </center>
             ${itemsHtml}
-            <hr style="border-top: 1px dashed black">
-            <div style="display:flex; justify-content:space-between; font-weight:bold; font-size: 14px;">
-                <span>TOTAL PAID:</span>
-                <span>${document.getElementById('grand-total').innerText}</span>
+            <hr style="border-top:1px dashed #000;">
+            <div style="display:flex; justify-content:space-between; font-weight:bold; font-size:13px;">
+                <span>GRAND TOTAL DUE:</span>
+                <span>${formatKsh(cartTotal)}</span>
             </div>
+            <div style="margin-top:4px;"><b>Settlement Layout Breakdown:</b></div>
+            ${paymentsHtml}
             ${savingsBanner}
             ${loyaltyMetricsBanner}
-            <div style="margin-top:8px"><b>PAYMENT METHOD: ${method}</b> ${ref ? `<br>Gateway Ref: ${ref}` : ''}</div>
-            <center><p style="margin-top:15px; font-size:11px;">Thank You for Shopping with Us!<br>Powered by UltraPOS Scale Module</p></center>
+            <hr style="border-top:1px dashed #000;">
+            <center style="margin-top:8px; font-size:11px;">
+                <b>KRA eTIMS INVOICE SIGNATURE:</b><br>
+                <span style="font-size:10px; background:#eee; padding:2px; display:inline-block; margin:3px 0;">${etimsData.kra_control_number}</span><br>
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=110x110&data=${encodeURIComponent(etimsData.kra_qr_code_str)}" style="margin:6px 0; width:110px; height:110px;"><br>
+                <i>Scan QR to verify on KRA iTax Portal</i>
+                <p style="margin-top:10px; font-weight:bold;">Thank You for Shopping with Us!<br>Powered by UltraPOS Scale Module</p>
+            </center>
         </div>`;
 }
 
 // --- 11. MODAL & WINDOW CONTROL ---
 function closeModal(id) { 
     const modal = document.getElementById(id);
-    if(modal) modal.style.display = 'none';
+    if(modal) modal.style.setProperty('display', 'none', 'important');
+    
+    // Also dismantle any lingering backdrops just in case
+    document.querySelectorAll('.modal').forEach(m => m.style.setProperty('display', 'none', 'important'));
+    
     const statusMsg = document.getElementById('payment-status-msg');
     if(statusMsg) statusMsg.remove();
     
     const barcodeInput = document.getElementById('barcode-input');
-    if(barcodeInput) barcodeInput.focus();
+    if(barcodeInput) {
+        barcodeInput.removeAttribute('disabled');
+        barcodeInput.focus();
+    }
 }
 
 function openSearchModal() { 
-    document.getElementById('search-modal').style.display = 'block'; 
+    document.getElementById('search-modal').style.display = 'block';
     document.getElementById('manual-query').focus(); 
 }
 
@@ -723,13 +837,6 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'F2') { e.preventDefault(); openAdminDashboard(); }
     if (e.key === 'F9') { e.preventDefault(); showDailyReport(); }
     if (e.key === 'F12') { e.preventDefault(); processCheckout(); }
-    
-    if (document.getElementById('payment-modal').style.display === 'block') {
-        if (e.key === '1') confirmPayment('CASH');
-        if (e.key === '2') confirmPayment('MPESA');
-        if (e.key === '3') confirmPayment('CARD');
-        if (e.key === '4' && ACTIVE_CUSTOMER_PHONE) confirmPayment('LOYALTY');
-    }
 });
 
 function voidCart() { 

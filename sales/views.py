@@ -9,6 +9,8 @@ from django.db.models import Sum, F, Count
 from django.views.decorators.csrf import csrf_exempt
 from datetime import datetime, time
 import uuid
+import json
+import random
 import requests
 from requests.auth import HTTPBasicAuth
 import base64
@@ -19,13 +21,13 @@ from inventory.models import Product, Promotion
 from .serializers import ProductSerializer 
 
 # --- 0. DARAJA CONFIGURATION & CREDENTIALS ---
-BUSINESS_SHORTCODE = "174379"  
+BUSINESS_SHORTCODE = "174379" 
 PASSKEY = "bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919"
-CONSUMER_KEY = "MbRM1lsyZGfOLdpRMJAdf52SajCZ2nv3HDMVnl9GAkXhocJd"      
-CONSUMER_SECRET = "TFlYh1rSiGbQAAYk2xJd1amA5uEeS3eWEdLC38e5MLCR1KGYwPtafV9XMuFb4PVo"  
-DARAJA_URL = "https://sandbox.safaricom.co.ke"  
+CONSUMER_KEY = "MbRM1lsyZGfOLdpRMJAdf52SajCZ2nv3HDMVnl9GAkXhocJd"     
+CONSUMER_SECRET = "TFlYh1rSiGbQAAYk2xJd1amA5uEeS3eWEdLC38e5MLCR1KGYwPtafV9XMuFb4PVo" 
+DARAJA_URL = "https://sandbox.safaricom.co.ke" 
 
-NGROK_TUNNEL_URL = "https://f507-197-248-18-5.ngrok-free.app"
+NGROK_TUNNEL_URL = "https://0fb2-197-248-18-69.ngrok-free.app"
 
 def get_mpesa_access_token():
     url = f"{DARAJA_URL}/oauth/v1/generate?grant_type=client_credentials"
@@ -44,11 +46,11 @@ class IsManagerOrDirector(BasePermission):
 @permission_classes([IsAuthenticated])
 def fetch_product(request, barcode):
     raw_barcode = str(barcode).strip()
-    parsed_qty = 1.0  
+    parsed_qty = 1.0 
     
     if len(raw_barcode) == 13 and raw_barcode.startswith('22'):
-        product_sku = raw_barcode[2:7]      
-        raw_weight_string = raw_barcode[7:12] 
+        product_sku = raw_barcode[2:7]     
+        raw_weight_string = raw_barcode[7:12]
         
         try:
             parsed_qty = float(raw_weight_string) / 1000.0
@@ -143,13 +145,25 @@ def fetch_loyalty_profile(request, phone_number):
     }, status=status.HTTP_200_OK)
 
 
-# --- 6. CHECKOUT VIEW LOOP WITH DRAWER LOCK CONSTRAINT ---
+# --- 6. KRA eTIMS COMPLIANCE HANDSHAKE SIMULATOR ---
+def simulate_etims_handshake(invoice_id, total_amount, tax_amount):
+    cu_serial = "KRA0020261194"
+    invoice_number = f"TZKE{datetime.now().strftime('%Y%m%d')}{random.randint(100000, 999999)}"
+    kra_qr_url = f"https://itax.kra.go.ke/KRAal/etimsReceiptVerify.htm?sN={cu_serial}&invNo={invoice_number}&date={datetime.now().strftime('%Y%m%d')}"
+    
+    return {
+        "kra_control_number": invoice_number,
+        "kra_qr_code_str": kra_qr_url,
+        "kra_serial": cu_serial
+    }
+
+
+# --- 7. UPGRADED CHECKOUT VIEW LOOP WITH SPLIT PAYMENTS & eTIMS COMPLIANCE ---
 class CheckoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     @transaction.atomic
     def post(self, request):
-        # SECURITY CONSTRAINT ENFORCEMENT: Block sales if the till float has not been initialized
         active_shift = CashierShift.objects.filter(cashier=request.user, is_active=True).first()
         if not active_shift:
             return Response({
@@ -160,59 +174,115 @@ class CheckoutView(APIView):
         data = request.data
         cart_items = data.get('items', [])
         total_due = float(data.get('total', 0))
-        payment_method = data.get('payment_method', 'CASH').upper()
         customer_no = str(data.get('customer_number', '')).strip()
+        split_payments = data.get('split_payments', [])
 
         if not cart_items:
             return Response({"error": "No items in cart"}, status=status.HTTP_400_BAD_REQUEST)
 
+        # Process multi-buy promotion calculations
         total_discounts, processed_ledger = process_multi_buy_promotions(cart_items)
         adjusted_total_due = max(0.0, total_due - total_discounts)
 
-        final_reference = f"CASH-{uuid.uuid4().hex[:6].upper()}"
-        loyalty_profile = None
+        # Pre-check inventory levels before proceeding
+        for entry in processed_ledger:
+            product = entry['product_obj']
+            requested_qty = float(entry['qty'])
+            live_product = Product.objects.select_for_update().get(id=product.id)
+            if float(live_product.stock_qty) < requested_qty:
+                return Response({
+                    "verified": False,
+                    "message": f"❌ Stockout Blocked: Insufficient inventory for [{live_product.name}]. Available: {live_product.stock_qty}, Requested: {requested_qty}."
+                }, status=status.HTTP_200_OK)
 
+        calculated_vat = adjusted_total_due * (0.16 / 1.16)
+
+        if split_payments:
+            total_paid_declared = sum(float(p['amount']) for p in split_payments)
+            if abs(total_paid_declared - adjusted_total_due) > 0.01:
+                return Response({
+                    "verified": False, 
+                    "message": f"Payment discrepancy! Split entries sum to {total_paid_declared}, but total due is {adjusted_total_due}."
+                }, status=status.HTTP_200_OK)
+        else:
+            fallback_method = data.get('payment_method', 'CASH').upper()
+            split_payments = [{'method': fallback_method, 'amount': adjusted_total_due}]
+
+        loyalty_profile = None
         if customer_no:
             search_phone = "".join(filter(str.isdigit, customer_no))
             if search_phone.startswith('0'): search_phone = '254' + search_phone[1:]
             loyalty_profile = LoyaltyProfile.objects.filter(phone_number=search_phone).first()
 
-        if payment_method == 'LOYALTY':
-            if not loyalty_profile:
-                return Response({"verified": False, "message": "Valid Loyalty Phone profile is required."}, status=status.HTTP_200_OK)
-            required_points = int(round(adjusted_total_due))
-            if loyalty_profile.points_balance < required_points:
-                return Response({"verified": False, "message": f"Insufficient Points! Required: {required_points} pts."}, status=status.HTTP_200_OK)
-            loyalty_profile.points_balance -= required_points
-            loyalty_profile.save()
-            final_reference = f"PTS-{uuid.uuid4().hex[:6].upper()}"
+        primary_reference_code = f"SPLIT-{uuid.uuid4().hex[:6].upper()}"
+        
+        # ---------------------------------------------------------------------
+        # CRITICAL SAFEGUARD: VERIFY UNASSIGNED OUTSTANDING MPESA RECORDS
+        # ---------------------------------------------------------------------
+        for payment in split_payments:
+            p_method = payment['method'].upper()
+            p_amount = float(payment['amount'])
 
-        elif payment_method in ['MPESA', 'CARD']:
-            search_phone = "".join(filter(str.isdigit, customer_no))
-            if search_phone.startswith('0'): search_phone = '254' + search_phone[1:]
+            if p_method == 'LOYALTY':
+                if not loyalty_profile:
+                    return Response({"verified": False, "message": "Valid Loyalty Phone profile is required."}, status=status.HTTP_200_OK)
+                required_points = int(round(p_amount))
+                if loyalty_profile.points_balance < required_points:
+                    return Response({"verified": False, "message": f"Insufficient Points for split! Required: {required_points} pts."}, status=status.HTTP_200_OK)
+                loyalty_profile.points_balance -= required_points
+                loyalty_profile.save()
+                primary_reference_code = f"PTS-{uuid.uuid4().hex[:6].upper()}"
 
-            payment_record = MpesaPayment.objects.select_for_update().filter(
-                customer_identifier=search_phone, amount__gte=adjusted_total_due, is_assigned=False
-            ).first()
+            elif p_method == 'MPESA':
+                if not customer_no:
+                    return Response({
+                        "verified": False, 
+                        "message": "❌ M-Pesa Error: A loyalty phone or customer phone tracer number must be filled to parse incoming payments."
+                    }, status=status.HTTP_200_OK)
+                
+                search_phone = "".join(filter(str.isdigit, customer_no))
+                if search_phone.startswith('0'): search_phone = '254' + search_phone[1:]
 
-            if not payment_record:
-                return Response({"verified": False, "message": "Payment not yet received or processing."}, status=status.HTTP_200_OK) 
-            
-            payment_record.is_assigned = True
-            payment_record.save()
-            final_reference = payment_record.gateway_reference
+                payment_record = MpesaPayment.objects.select_for_update().filter(
+                    customer_identifier=search_phone, 
+                    amount__gte=p_amount, 
+                    is_assigned=False
+                ).order_by('-timestamp').first()
 
+                if not payment_record:
+                    return Response({
+                        "verified": False, 
+                        "message": f"❌ Payment Missing: No unassigned incoming M-Pesa transaction of Ksh {p_amount} found for phone {search_phone}. Please complete the payment push prompt or check payment status."
+                    }, status=status.HTTP_200_OK) 
+                
+                payment_record.is_assigned = True
+                payment_record.save()
+                primary_reference_code = payment_record.gateway_reference
+
+            elif p_method == 'CARD':
+                primary_reference_code = f"CRD-{uuid.uuid4().hex[:6].upper()}"
+
+        # Calculate reward credits accruals
         points_earned = 0
-        if payment_method != 'LOYALTY' and loyalty_profile:
-            points_earned = int(adjusted_total_due // 100)
+        non_loyalty_paid_sum = sum(float(p['amount']) for p in split_payments if p['method'] != 'LOYALTY')
+        if non_loyalty_paid_sum > 0 and loyalty_profile:
+            points_earned = int(non_loyalty_paid_sum // 100)
             if points_earned > 0:
                 loyalty_profile.points_balance += points_earned
                 loyalty_profile.save()
 
+        local_invoice_uuid = f"INV-{uuid.uuid4().hex[:8].upper()}"
+        etims_receipt = simulate_etims_handshake(local_invoice_uuid, adjusted_total_due, calculated_vat)
+
         sale = Sale.objects.create(
-            transaction_id=f"INV-{uuid.uuid4().hex[:8].upper()}",
-            total_amount=adjusted_total_due, cashier=request.user,
-            payment_method=payment_method, reference_code=final_reference
+            transaction_id=local_invoice_uuid,
+            total_amount=adjusted_total_due, 
+            cashier=request.user,
+            payment_method="SPLIT" if len(split_payments) > 1 else split_payments[0]['method'], 
+            reference_code=primary_reference_code,
+            payment_breakdown_json=json.dumps(split_payments),
+            kra_control_number=etims_receipt['kra_control_number'],
+            kra_qr_code_str=etims_receipt['kra_qr_code_str']
         )
         
         low_stock_alerts = []
@@ -222,24 +292,25 @@ class CheckoutView(APIView):
             
             SaleItem.objects.create(sale=sale, product=product, quantity=qty, price_at_sale=entry['final_price_at_sale'])
             
-            if product.is_weighed:
-                product.stock_qty = float(product.stock_qty) - float(qty)
+            live_product = Product.objects.get(id=product.id)
+            if live_product.is_weighed:
+                live_product.stock_qty = float(live_product.stock_qty) - float(qty)
             else:
-                product.stock_qty -= int(qty)
-            product.save()
+                live_product.stock_qty -= int(qty)
+            live_product.save()
 
-            if product.stock_qty <= product.low_stock_threshold:
-                low_stock_alerts.append({"name": product.name, "remaining": product.stock_qty})
+            if live_product.stock_qty <= live_product.low_stock_threshold:
+                low_stock_alerts.append({"name": live_product.name, "remaining": live_product.stock_qty})
         
         return Response({
-            "verified": True, "invoice": sale.transaction_id, "auto_reference": final_reference,
+            "verified": True, "invoice": sale.transaction_id, "auto_reference": primary_reference_code,
             "total_charged": adjusted_total_due, "promotional_savings": total_discounts,
             "points_earned": points_earned, "new_points_balance": loyalty_profile.points_balance if loyalty_profile else 0,
-            "alerts": low_stock_alerts
+            "alerts": low_stock_alerts, "etims": etims_receipt
         })
 
 
-# --- 7. MPESA EXPRESS STK TRIGGER ROUTINES ---
+# --- 8. MPESA EXPRESS STK TRIGGER ROUTINES ---
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def trigger_stk_push(request):
@@ -250,6 +321,9 @@ def trigger_stk_push(request):
     if not phone:
         return Response({"error": "Customer Phone number is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+    cleaned_phone = "".join(filter(str.isdigit, str(phone)))
+    if cleaned_phone.startswith('0'): cleaned_phone = '254' + cleaned_phone[1:]
+
     try:
         token = get_mpesa_access_token()
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
@@ -258,8 +332,8 @@ def trigger_stk_push(request):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         payload = {
             "BusinessShortCode": BUSINESS_SHORTCODE, "Password": password, "Timestamp": timestamp,
-            "TransactionType": "CustomerPayBillOnline", "Amount": amount, "PartyA": phone,
-            "PartyB": BUSINESS_SHORTCODE, "PhoneNumber": phone,
+            "TransactionType": "CustomerPayBillOnline", "Amount": amount, "PartyA": cleaned_phone,
+            "PartyB": BUSINESS_SHORTCODE, "PhoneNumber": cleaned_phone,
             "CallBackURL": f"{NGROK_TUNNEL_URL}/api/v1/mpesa-callback/",
             "AccountReference": "UltraPOS_Checkout", "TransactionDesc": "Point of Sale Payment"
         }
@@ -275,7 +349,7 @@ def trigger_stk_push(request):
         return Response({"error": f"Failed to connect to Safaricom: {str(e)}"}, status=status.HTTP_200_OK)
 
 
-# --- 8. DARAJA ASYNCHRONOUS WEBHOOK RECEIVER (CALLBACK) ---
+# --- 9. DARAJA ASYNCHRONOUS WEBHOOK RECEIVER (CALLBACK) ---
 @csrf_exempt
 @api_view(['POST'])
 @permission_classes([]) 
@@ -303,24 +377,26 @@ def mpesa_callback(request):
 
             if not raw_phone_number: raw_phone_number = "254708374149"
 
-            cleaned_phone = "".join(filter(str.isdigit, raw_phone_number))
+            cleaned_phone = "".join(filter(str.isdigit, str(raw_phone_number)))
             if cleaned_phone.startswith('0'): cleaned_phone = '254' + cleaned_phone[1:]
             elif cleaned_phone.startswith('7') or cleaned_phone.startswith('1'): cleaned_phone = '254' + cleaned_phone
 
-            MpesaPayment.objects.create(gateway_reference=mpesa_receipt, amount=amount, customer_identifier=cleaned_phone, is_assigned=False)
+            MpesaPayment.objects.create(
+                gateway_reference=mpesa_receipt, 
+                amount=amount, 
+                customer_identifier=cleaned_phone, 
+                is_assigned=False
+            )
         return Response({"ResultCode": 0, "ResultDesc": "Callback Processed Successfully"}, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({"ResultCode": 0, "ResultDesc": f"Handled exception: {str(e)}"}, status=status.HTTP_200_OK)
 
 
-# --- 9. NEW EXTENSION FEATURES: CASH TILL RECONCILIATION API CONTROLLERS ---
+# --- 10. CASH TILL RECONCILIATION API CONTROLLERS ---
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def open_shift(request):
-    """Initializes cashier session opening balances float tracking"""
     cashier = request.user
-    
-    # Block redundant operations if a shift is already active
     already_open = CashierShift.objects.filter(cashier=cashier, is_active=True).exists()
     if already_open:
         return Response({"success": True, "message": "Shift drawer session is already initialized active."})
@@ -333,31 +409,26 @@ def open_shift(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def close_shift(request):
-    """Compiles internal receipt logs to audit cash drawers on shift logout"""
     cashier = request.user
     shift = CashierShift.objects.filter(cashier=cashier, is_active=True).first()
     
     if not shift:
-        return Response({"error": "No active drawer shift session found to drop."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "No active drawer shift session found to drop.", "status": status.HTTP_400_BAD_REQUEST})
         
-    # Read user submission parameters
     user_cash = float(request.data.get('counted_cash', 0.00))
     user_mpesa = float(request.data.get('counted_mpesa', 0.00))
     user_card = float(request.data.get('counted_card', 0.00))
     
-    # Query sales ledger items completed by this cashier since the shift started
     shift_sales = Sale.objects.filter(cashier=cashier, timestamp__gte=shift.start_time)
     
     expected_cash = float(shift.opening_float) + (float(shift_sales.filter(payment_method='CASH').aggregate(s=Sum('total_amount'))['s'] or 0.00))
     expected_mpesa = float(shift_sales.filter(payment_method='MPESA').aggregate(s=Sum('total_amount'))['s'] or 0.00)
     expected_card = float(shift_sales.filter(payment_method='CARD').aggregate(s=Sum('total_amount'))['s'] or 0.00)
     
-    # Calculate variances (Counted - Expected)
     variance_cash = user_cash - expected_cash
     variance_mpesa = user_mpesa - expected_mpesa
     variance_card = user_card - expected_card
     
-    # Finalize model record parameters
     shift.counted_cash = user_cash
     shift.counted_mpesa = user_mpesa
     shift.counted_card = user_card
@@ -375,7 +446,7 @@ def close_shift(request):
     })
 
 
-# --- 10. REPORTING, ADJUSTMENTS & OVERVIEWS ---
+# --- 11. REPORTING, ADJUSTMENTS & OVERVIEWS ---
 @api_view(['POST'])
 @permission_classes([IsAuthenticated, IsManagerOrDirector])
 def adjust_stock(request):

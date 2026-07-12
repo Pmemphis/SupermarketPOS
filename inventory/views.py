@@ -1,109 +1,108 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework import generics, status
 from django.db import transaction
-from django.utils import timezone
-from django.db.models import Sum, F, Count
-from .models import Sale, SaleItem
-from inventory.models import Product
-from .serializers import ProductSerializer 
-import uuid
+from django.shortcuts import get_object_or_404
+from .models import Product, Promotion
+from .serializers import ProductSerializer
 
-# --- BARCODE FETCH ---
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def fetch_product(request, barcode):
-    try:
-        product = Product.objects.get(barcode=barcode)
-        return Response({
-            "id": product.id,
-            "name": product.name,
-            "retail_price": float(product.retail_price),
-            "stock": product.stock_qty
-        })
-    except Product.DoesNotExist:
-        return Response({"error": "Product not found"}, status=404)
+# --- 1. ACCESS CONTROL PERMISSIONS ---
+class IsManagerOrDirector(BasePermission):
+    """
+    Ensures only administrators, corporate supervisors, or managers 
+    can manipulate stock quantities and adjust values.
+    """
+    def has_permission(self, request, view):
+        return bool(request.user and (request.user.is_staff or request.user.is_superuser))
 
-# --- MANUAL SEARCH (F1) ---
-class ProductListView(generics.ListAPIView):
+
+# --- 2. PRODUCT CONTROLLER CATALOG LIST & VIEW ---
+class ProductListCreateView(generics.ListCreateAPIView):
+    """
+    Handles fetching all stock items or creating a brand new SKU product profile.
+    Supports high-speed filtering search parameters 'q' via the manual search (F1) panel.
+    """
     permission_classes = [IsAuthenticated]
     serializer_class = ProductSerializer
 
     def get_queryset(self):
-        query = self.request.query_params.get('q', '')
+        queryset = Product.objects.all()
+        query = self.request.query_params.get('q', '').strip()
         if query:
-            return Product.objects.filter(name__icontains=query) | \
-                   Product.objects.filter(barcode__icontains=query)
-        return Product.objects.all()
+            return queryset.filter(name__icontains=query) | \
+                   queryset.filter(barcode__icontains=query) | \
+                   queryset.filter(sku__icontains=query)
+        return queryset
 
-# --- CHECKOUT (F12) ---
-class CheckoutView(APIView):
-    permission_classes = [IsAuthenticated]
+
+class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    Handles single product inspection updates or decommissioning rows from active stock.
+    """
+    permission_classes = [IsAuthenticated, IsManagerOrDirector]
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+
+
+# --- 3. FIX: RESOLVE 405 METHOD NOT ALLOWED ON STOCK ADJUSTMENTS ---
+class AdjustStockView(APIView):
+    """
+    Handles secure stock adjustments (restocks or inventory shrinkage updates).
+    Configured explicitly as an APIView mapping the 'post' method.
+    """
+    permission_classes = [IsAuthenticated, IsManagerOrDirector]
 
     @transaction.atomic
     def post(self, request):
-        cart_items = request.data.get('items', [])
-        total = float(request.data.get('total', 0))
-        
-        if not cart_items:
-            return Response({"error": "No items in cart"}, status=400)
+        # Gracefully support both snake_case or standard schema payload properties
+        product_id = request.data.get('product_id') or request.data.get('id')
+        new_quantity = request.data.get('new_quantity')
+        adjustment_quantity = request.data.get('quantity')
 
-        sale = Sale.objects.create(
-            transaction_id=str(uuid.uuid4())[:8].upper(),
-            total_amount=total,
-            cashier=request.user
-        )
-        
-        for item in cart_items:
-            product = Product.objects.get(id=item['id'])
-            SaleItem.objects.create(
-                sale=sale, product=product,
-                quantity=item['qty'], price_at_sale=item['retail_price']
+        if not product_id:
+            return Response(
+                {"error": "Missing required field: product_id"}, 
+                status=status.HTTP_400_BAD_REQUEST
             )
-            product.stock_qty -= int(item['qty'])
+
+        # Lock table row inside the transaction frame to maintain full ledger safety
+        product = get_object_or_404(Product.objects.select_for_update(), id=product_id)
+
+        try:
+            # Scenario A: Explicit assignment payload ('new_quantity')
+            if new_quantity is not None:
+                if product.is_weighed:
+                    product.stock_qty = float(new_quantity)
+                else:
+                    product.stock_qty = int(new_quantity)
+            
+            # Scenario B: Relative adjustment payload ('quantity')
+            elif adjustment_quantity is not None:
+                if product.is_weighed:
+                    product.stock_qty = float(product.stock_qty) + float(adjustment_quantity)
+                else:
+                    product.stock_qty = int(product.stock_qty) + int(adjustment_quantity)
+            
+            else:
+                return Response(
+                    {"error": "Please provide either 'new_quantity' or relative adjustment value 'quantity'"}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Save the record back to the database
             product.save()
 
-        return Response({"status": "Success", "invoice": sale.transaction_id})
+            return Response({
+                "status": "Success",
+                "message": f"Inventory balances for [{product.name}] adjusted successfully.",
+                "product_id": product.id,
+                "new_stock": product.stock_qty
+            }, status=status.HTTP_200_OK)
 
-# --- Z-REPORT (F9) FIX ---
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def daily_summary_report(request):
-    # CRITICAL: Use localtime to ensure we match Kenya's current date
-    today_local = timezone.localtime().date()
-    
-    # Filter sales that happened on this local date
-    sales_today = Sale.objects.filter(timestamp__date=today_local)
-    
-    totals = sales_today.aggregate(
-        grand_total=Sum('total_amount'),
-        transaction_count=Count('id')
-    )
-    
-    # Calculate profit for today's items
-    profit_data = SaleItem.objects.filter(sale__timestamp__date=today_local).aggregate(
-        total_profit=Sum((F('price_at_sale') - F('product__cost_price')) * F('quantity'))
-    )
-    
-    return Response({
-        "date": today_local.strftime("%d %B %Y"),
-        "total_sales_count": totals['transaction_count'] or 0,
-        "gross_revenue": float(totals['grand_total'] or 0),
-        "estimated_profit": float(profit_data['total_profit'] or 0)
-    })
-
-# --- DASHBOARD (F2) ---
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def dashboard_analytics(request):
-    stats = Sale.objects.aggregate(total_revenue=Sum('total_amount'), total_orders=Count('id'))
-    profit_data = SaleItem.objects.aggregate(
-        total_profit=Sum((F('price_at_sale') - F('product__cost_price')) * F('quantity'))
-    )
-    return Response({
-        "revenue": float(stats['total_revenue'] or 0),
-        "orders": stats['total_orders'] or 0,
-        "profit": float(profit_data['total_profit'] or 0)
-    })
+        except ValueError:
+            return Response(
+                {"error": "Invalid format types parsed. Quantities must be numerical figures."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )

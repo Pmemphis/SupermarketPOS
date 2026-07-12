@@ -1,16 +1,49 @@
-# Django Local Database & Cache
-db.sqlite3
+# ==========================================
+# NextGen UltraPOS Master Production GitIgnore
+# ==========================================
+
+# --- 1. Python & Bytecode Engine ---
 *.pyc
+*.pyo
+*.pyd
 __pycache__/
+celerybeat-schedule
+*.log
+
+# --- 2. Django Framework Static & Media Volumes ---
+db.sqlite3
+db.sqlite3-journal
 staticfiles/
 media/
+/static/root/
 
-# Virtual Environments
-venv/
+# --- 3. Virtual Environment Wrappers ---
 .venv/
+venv/
 env/
+ENV/
+dist/
+build/
+*.spec
 
-# IDE and OS configurations
+# --- 4. System Kiosk Runtime Caches & Local Browser Profiles ---
+pos-profile/
+frontend/node_modules/
+.npmrc
+
+# --- 5. Operating System Configuration Trash ---
 .DS_Store
-.vscode/
+.DS_Store?
+ehthumbs.db
+Thumbs.db
 .idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# --- 6. Environment & Secret Credential Storage ---
+.env
+.secrets
